@@ -1,0 +1,60 @@
+name: Publish Package
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Resolve publish target
+        id: package
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "tag=$(node -p "require('./package.json').version.includes('-') ? 'beta' : 'latest'")" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version already exists on npm
+        id: registry
+        run: |
+          if npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}" version >/dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "version already published; skipping"
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "version not found on npm; publishing"
+          fi
+
+      - name: Publish to npm
+        if: steps.registry.outputs.should_publish == 'true'
+        run: npm publish --tag "${{ steps.package.outputs.tag }}"
