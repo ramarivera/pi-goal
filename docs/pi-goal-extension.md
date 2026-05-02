@@ -81,3 +81,7 @@ npm run typecheck
 npm run lint
 openspec validate add-pi-goal --strict
 ```
+
+`npm test` includes a Pi SDK e2e check that loads the project-local extension through
+`DefaultResourceLoader`, creates an in-memory `AgentSession`, runs `/goal` commands,
+and verifies the persisted `pi-goal-state` custom entries.
