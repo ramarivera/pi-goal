@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"test": "tsx --test test/**/*.test.ts",
+		"test:live": "PI_GOAL_LIVE=1 tsx --test --test-force-exit test/pi-goal-live-model.test.ts",
 		"typecheck": "npm exec --package typescript -- tsc --noEmit",
 		"lint": "npm run typecheck"
 	},
