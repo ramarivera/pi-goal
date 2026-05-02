@@ -1,0 +1,21 @@
+{
+  "provider": "opencode",
+  "model": "gpt-5.3-codex-spark",
+  "resources": [
+    {
+      "name": "codex",
+      "type": "git",
+      "url": "https://github.com/openai/codex.git"
+    },
+    {
+      "name": "pi-mono",
+      "type": "git",
+      "url": "https://github.com/badlogic/pi-mono.git"
+    },
+    {
+      "name": "opencode",
+      "type": "git",
+      "url": "https://github.com/sst/opencode.git"
+    }
+  ]
+}

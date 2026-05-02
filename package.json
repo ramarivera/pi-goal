@@ -1,0 +1,11 @@
+{
+	"name": "pi-goal",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "tsx --test test/**/*.test.ts",
+		"typecheck": "npm exec --package typescript -- tsc --noEmit",
+		"lint": "npm run typecheck"
+	}
+}
