@@ -8,6 +8,7 @@ import {
 	DefaultResourceLoader,
 	SessionManager,
 	type CustomEntry,
+	type ExtensionContext,
 	type SessionEntry,
 } from "@mariozechner/pi-coding-agent";
 
@@ -82,6 +83,7 @@ test("Pi SDK executes /goal commands through the live extension runtime", async 
 	});
 
 	try {
+		await session.bindExtensions({});
 		await session.prompt("/goal Implement SDK e2e --budget 123");
 		let goal = latestGoal(session.sessionManager.getEntries());
 		assert.equal(goal.objective, "Implement SDK e2e");
@@ -103,5 +105,114 @@ test("Pi SDK executes /goal commands through the live extension runtime", async 
 		assert.equal(goal.status, "cleared");
 	} finally {
 		session.dispose();
+	}
+});
+
+test("Pi SDK exposes pi-goal commands and model tools through live runtime contracts", async () => {
+	const loader = new DefaultResourceLoader({
+		cwd: repoRoot,
+		agentDir,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+	});
+	await loader.reload();
+
+	const { session } = await createAgentSession({
+		cwd: repoRoot,
+		agentDir,
+		resourceLoader: loader,
+		sessionManager: SessionManager.inMemory(repoRoot),
+		noTools: "all",
+	});
+
+	try {
+		await session.bindExtensions({});
+		assert.ok(session.extensionRunner.getCommand("goal"), "expected /goal command to be registered");
+		const toolNames = session.extensionRunner.getAllRegisteredTools().map((tool) => tool.definition.name);
+		assert.ok(toolNames.includes("get_goal"), "expected get_goal tool to be registered");
+		assert.ok(toolNames.includes("create_goal"), "expected create_goal tool to be registered");
+		assert.ok(toolNames.includes("update_goal"), "expected update_goal tool to be registered");
+
+		const updateGoal = session.extensionRunner.getToolDefinition("update_goal");
+		assert.ok(updateGoal, "expected update_goal definition to be retrievable");
+		const result = await updateGoal.execute(
+			"call-no-goal",
+			{ status: "complete" },
+			undefined,
+			undefined,
+			session.createReplacedSessionContext() as ExtensionContext,
+		);
+		assert.match(JSON.stringify(result.details), /does not have an active or paused goal/);
+	} finally {
+		session.dispose();
+	}
+});
+
+test("Pi SDK restores persisted goal state after reopening a file-backed session", async () => {
+	const loader = new DefaultResourceLoader({
+		cwd: repoRoot,
+		agentDir,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+	});
+	await loader.reload();
+	const sessionDir = await mkdtemp(join(tmpdir(), "pi-goal-session-"));
+	let sessionFile: string;
+
+	try {
+		const firstManager = SessionManager.create(repoRoot, sessionDir);
+		const first = await createAgentSession({
+			cwd: repoRoot,
+			agentDir,
+			resourceLoader: loader,
+			sessionManager: firstManager,
+			noTools: "all",
+		});
+
+		try {
+			await first.session.bindExtensions({});
+			await first.session.prompt("/goal Persist across reopen --budget 77");
+			sessionFile = first.session.exportToJsonl(join(sessionDir, "persisted-goal-session.jsonl"));
+			const created = latestGoal(first.session.sessionManager.getEntries());
+			assert.equal(created.status, "active");
+			assert.equal(created.tokenBudget, 77);
+		} finally {
+			first.session.dispose();
+		}
+
+		const reopenedLoader = new DefaultResourceLoader({
+			cwd: repoRoot,
+			agentDir,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		});
+		await reopenedLoader.reload();
+		const reopenedManager = SessionManager.open(sessionFile, sessionDir, repoRoot);
+		const reopened = await createAgentSession({
+			cwd: repoRoot,
+			agentDir,
+			resourceLoader: reopenedLoader,
+			sessionManager: reopenedManager,
+			noTools: "all",
+		});
+
+		try {
+			await reopened.session.bindExtensions({});
+			await reopened.session.prompt("/goal pause");
+			const restoredAndPaused = latestGoal(reopened.session.sessionManager.getEntries());
+			assert.equal(restoredAndPaused.objective, "Persist across reopen");
+			assert.equal(restoredAndPaused.status, "paused");
+			assert.equal(restoredAndPaused.tokenBudget, 77);
+		} finally {
+			reopened.session.dispose();
+		}
+	} finally {
+		await rm(sessionDir, { recursive: true, force: true });
 	}
 });

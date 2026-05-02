@@ -1,3 +1,14 @@
+import { Type } from "@mariozechner/pi-ai";
+import type {
+	ContextEvent,
+	ExtensionAPI,
+	ExtensionCommandContext,
+	InputEvent,
+	ToolDefinition,
+	TurnEndEvent as PiTurnEndEvent,
+	TurnStartEvent,
+} from "@mariozechner/pi-coding-agent";
+
 type GoalStatus = "active" | "paused" | "budget_limited" | "complete" | "cleared";
 
 interface GoalState {
@@ -26,35 +37,9 @@ type GoalCommand =
 	| { action: Exclude<GoalCommandAction, "create"> }
 	| { action: "create"; objective: string; tokenBudget: number | undefined; rest: string[] };
 
-interface JsonSchema {
-	type: string;
-	properties: Record<string, JsonSchemaProperty> | undefined;
-	required: string[] | undefined;
-	additionalProperties: boolean | undefined;
-	description: string | undefined;
-	enum: string[] | undefined;
-}
-
-interface JsonSchemaProperty {
-	type: string;
-	description?: string;
-	enum?: string[];
-}
-
 interface TextToolResult<TDetails = unknown> {
 	content: Array<{ type: "text"; text: string }>;
 	details: TDetails;
-}
-
-interface ExtensionUi {
-	notify(message: string, level: "info" | "warning" | "error"): void;
-}
-
-interface ExtensionCommandContext {
-	ui: ExtensionUi;
-	sessionManager?: {
-		getBranch?: () => SessionEntry[];
-	};
 }
 
 interface SessionEntry {
@@ -63,67 +48,13 @@ interface SessionEntry {
 	data?: unknown;
 }
 
-interface ExtensionTool<TParams extends Record<string, unknown> = Record<string, unknown>, TDetails = unknown> {
-	name: string;
-	label: string;
-	description: string;
-	parameters: JsonSchema;
-	execute(
-		toolCallId: string,
-		params: TParams,
-		signal?: AbortSignal,
-		onUpdate?: unknown,
-		ctx?: ExtensionCommandContext,
-	): Promise<TextToolResult<TDetails>>;
-}
-
-interface ExtensionApi {
-	appendEntry<T = unknown>(customType: string, data?: T): void;
-	registerCommand(
-		name: string,
-		options: {
-			description?: string;
-			handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
-		},
-	): void;
-	registerTool<TParams extends Record<string, unknown>, TDetails = unknown>(
-		tool: ExtensionTool<TParams, TDetails>,
-	): void;
-	on(event: "session_start", handler: (event: { type: "session_start" }, ctx: ExtensionCommandContext) => void): void;
-	on(event: "input", handler: (event: { type: "input"; source?: string }) => void): void;
-	on(event: "context", handler: (event: ContextEvent) => ContextResult): void;
-	on(event: "before_agent_start", handler: (event: { type: "before_agent_start"; prompt?: unknown }) => void): void;
-	on(event: "turn_start", handler: (event: { type: "turn_start"; turnIndex: number; timestamp?: number }) => void): void;
-	on(event: "tool_execution_end", handler: (event: { type: "tool_execution_end" }) => void): void;
-	on(event: "turn_end", handler: (event: TurnEndEvent) => void): void;
-	on(event: "agent_end", handler: (event: { type: "agent_end" }) => void): void;
-	sendMessage<T = unknown>(
-		message: { customType: string; content: string; display: boolean; details?: T },
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-	): void;
-}
-
 interface ContextMessage {
 	customType?: string;
 	details?: { goalId?: string } | Record<string, unknown>;
 	[key: string]: unknown;
 }
 
-interface ContextEvent {
-	type: "context";
-	messages: ContextMessage[];
-}
-
-interface ContextResult {
-	messages: ContextMessage[];
-}
-
-interface TurnEndEvent {
-	type: "turn_end";
-	turnIndex: number;
-	message?: UsageCarrier;
-	toolResults?: unknown[];
-}
+type TurnEndEvent = Omit<PiTurnEndEvent, "message"> & { message?: UsageCarrier };
 
 interface UsageCarrier {
 	usage?: UsageShape;
@@ -147,15 +78,6 @@ interface UsageShape {
 	totalTokens?: number;
 }
 
-interface CreateGoalParams extends Record<string, unknown> {
-	objective: string;
-	token_budget?: number;
-}
-
-interface UpdateGoalParams extends Record<string, unknown> {
-	status: string;
-}
-
 interface GoalExtensionOptions {
 	scheduler?: (fn: () => void) => void;
 	clock?: () => number;
@@ -163,6 +85,20 @@ interface GoalExtensionOptions {
 
 const ENTRY_TYPE = "pi-goal-state";
 const CONTINUATION_MESSAGE_TYPE = "pi-goal-continuation";
+const EMPTY_SCHEMA = Type.Object({}, { additionalProperties: false });
+const CREATE_GOAL_SCHEMA = Type.Object(
+	{
+		objective: Type.String({ description: "Goal objective to pursue." }),
+		token_budget: Type.Optional(Type.Number({ description: "Optional positive token budget." })),
+	},
+	{ additionalProperties: false },
+);
+const UPDATE_GOAL_SCHEMA = Type.Object(
+	{
+		status: Type.String({ enum: ["complete"], description: 'Only "complete" is supported.' }),
+	},
+	{ additionalProperties: false },
+);
 
 const TERMINAL_STATUSES = new Set<GoalStatus>(["complete", "budget_limited", "cleared"]);
 
@@ -362,17 +298,6 @@ function makeTextResult<TDetails>(payload: TDetails): TextToolResult<TDetails> {
 	};
 }
 
-function makeObjectSchema(properties: JsonSchema["properties"], required: string[] = []): JsonSchema {
-	return {
-		type: "object",
-		properties,
-		required,
-		additionalProperties: false,
-		description: undefined,
-		enum: undefined,
-	};
-}
-
 function createGoalExtension(options: GoalExtensionOptions = {}) {
 	const scheduler = options.scheduler ?? ((fn: () => void) => setTimeout(fn, 0));
 	const clock = options.clock ?? now;
@@ -383,27 +308,27 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 	let awaitingContinuationGoalId: string | undefined;
 	let planModeActive = false;
 
-	function persist(pi: ExtensionApi): void {
+	function persist(pi: ExtensionAPI): void {
 		if (currentGoal) {
 			currentGoal.updatedAt = clock();
 			pi.appendEntry(ENTRY_TYPE, { ...currentGoal });
 		}
 	}
 
-	function setGoal(pi: ExtensionApi, next: GoalState): GoalState {
+	function setGoal(pi: ExtensionAPI, next: GoalState): GoalState {
 		currentGoal = next;
 		persist(pi);
 		return currentGoal;
 	}
 
-	function markBudgetLimitedIfNeeded(pi: ExtensionApi): void {
+	function markBudgetLimitedIfNeeded(pi: ExtensionAPI): void {
 		if (!currentGoal?.tokenBudget) return;
 		if (currentGoal.tokensUsed < currentGoal.tokenBudget) return;
 		currentGoal = transitionGoal(currentGoal, "budget_limited");
 		persist(pi);
 	}
 
-	function scheduleContinuation(pi: ExtensionApi): boolean {
+	function scheduleContinuation(pi: ExtensionAPI): boolean {
 		if (!shouldScheduleContinuation(currentGoal, { planModeActive })) return false;
 		const activeGoal = currentGoal;
 		if (!activeGoal) return false;
@@ -430,9 +355,9 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		return true;
 	}
 
-	function register(pi: ExtensionApi): void {
+	function register(pi: ExtensionAPI): void {
 		pi.registerCommand("goal", {
-			description: "Manage a persisted goal/Ralph loop: /goal <objective>, /goal status, /goal pause, /goal resume, /goal clear",
+			description: "Manage a persisted goal continuation: /goal <objective>, /goal status, /goal pause, /goal resume, /goal clear",
 			handler: async (args, ctx) => {
 				try {
 					const parsed = parseGoalArgs(args);
@@ -470,27 +395,22 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			},
 		});
 
-		pi.registerTool<Record<string, never>, GoalResponse>({
+		const getGoalTool: ToolDefinition<typeof EMPTY_SCHEMA, GoalResponse, unknown> = {
 			name: "get_goal",
 			label: "Get Goal",
 			description: "Return the current persisted goal state, if any.",
-			parameters: makeObjectSchema({}),
+			parameters: EMPTY_SCHEMA,
 			async execute() {
 				return makeTextResult(goalResponse(currentGoal));
 			},
-		});
+		};
+		pi.registerTool(getGoalTool);
 
-		pi.registerTool<CreateGoalParams, GoalResponse | { error: string; goal: GoalState }>({
+		const createGoalTool: ToolDefinition<typeof CREATE_GOAL_SCHEMA, GoalResponse | { error: string; goal: GoalState }, unknown> = {
 			name: "create_goal",
 			label: "Create Goal",
 			description: "Create one active persisted goal when no active or paused goal exists.",
-			parameters: makeObjectSchema(
-				{
-					objective: { type: "string", description: "Goal objective to pursue." },
-					token_budget: { type: "number", description: "Optional positive token budget." },
-				},
-				["objective"],
-			),
+			parameters: CREATE_GOAL_SCHEMA,
 			async execute(_toolCallId, params) {
 				if (currentGoal && !TERMINAL_STATUSES.has(currentGoal.status)) {
 					return makeTextResult({
@@ -501,34 +421,36 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 				setGoal(pi, createGoal(params.objective, params.token_budget));
 				return makeTextResult(goalResponse(currentGoal));
 			},
-		});
+		};
+		pi.registerTool(createGoalTool);
 
-		pi.registerTool<UpdateGoalParams, GoalResponse | { error: string }>({
+		const updateGoalTool: ToolDefinition<typeof UPDATE_GOAL_SCHEMA, GoalResponse | { error: string }, unknown> = {
 			name: "update_goal",
 			label: "Update Goal",
 			description: 'Mark the current goal complete. Only status "complete" is accepted.',
-			parameters: makeObjectSchema(
-				{
-					status: { type: "string", enum: ["complete"], description: 'Only "complete" is supported.' },
-				},
-				["status"],
-			),
+			parameters: UPDATE_GOAL_SCHEMA,
 			async execute(_toolCallId, params) {
 				if (params.status !== "complete") {
 					return makeTextResult({
 						error: 'update_goal can only mark the existing goal complete; pause, resume, clear, and budget-limited status changes are controlled by the user or system',
 					});
 				}
+				if (!currentGoal || TERMINAL_STATUSES.has(currentGoal.status)) {
+					return makeTextResult({
+						error: "cannot complete a goal because this thread does not have an active or paused goal",
+					});
+				}
 				setGoal(pi, transitionGoal(currentGoal, "complete"));
 				return makeTextResult(goalResponse(currentGoal));
 			},
-		});
+		};
+		pi.registerTool(updateGoalTool);
 
 		pi.on("session_start", (_event, ctx) => {
-			currentGoal = readLatestGoalFromBranch(ctx.sessionManager?.getBranch?.());
+			currentGoal = readLatestGoalFromBranch(ctx.sessionManager?.getEntries?.() ?? ctx.sessionManager?.getBranch?.());
 		});
 
-		pi.on("input", (event) => {
+		pi.on("input", (event: InputEvent) => {
 			if (event.source !== "extension" && currentGoal?.status === "active") {
 				currentGoal = { ...currentGoal, continuationSuppressed: false, lastContinuationHadToolCall: true };
 			}
@@ -536,8 +458,9 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 
 		pi.on("context", (event) => ({
 			messages: event.messages.filter((message) => {
-				if (message.customType !== CONTINUATION_MESSAGE_TYPE) return true;
-				return message.details?.goalId === currentGoal?.goalId && currentGoal?.status === "active";
+				const candidate = message as unknown as ContextMessage;
+				if (candidate.customType !== CONTINUATION_MESSAGE_TYPE) return true;
+				return candidate.details?.goalId === currentGoal?.goalId && currentGoal?.status === "active";
 			}),
 		}));
 
@@ -546,7 +469,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			planModeActive = prompt.includes("[PLAN MODE ACTIVE]") || prompt.includes("plan mode");
 		});
 
-		pi.on("turn_start", (event) => {
+		pi.on("turn_start", (event: TurnStartEvent) => {
 			activeTurnStartedAt = event.timestamp ?? clock();
 			currentTurnHadTool = false;
 			currentTurnIsContinuation = currentGoal?.goalId === awaitingContinuationGoalId;
@@ -562,10 +485,11 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		});
 
 		pi.on("turn_end", (event) => {
+			const goalTurnEnd = event as unknown as TurnEndEvent;
 			if (!currentGoal?.status || currentGoal.status !== "active") return;
 			const endedAt = clock();
 			const elapsed = activeTurnStartedAt ? Math.max(0, Math.floor((endedAt - activeTurnStartedAt) / 1000)) : 0;
-			const tokens = extractTokenUsage(event.message);
+			const tokens = extractTokenUsage(goalTurnEnd.message);
 			currentGoal = {
 				...currentGoal,
 				tokensUsed: currentGoal.tokensUsed + tokens,
@@ -595,15 +519,15 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 	};
 }
 
-function piGoalRalphLoopExtension(pi: ExtensionApi): void {
+function piGoalExtension(pi: ExtensionAPI): void {
 	createGoalExtension().register(pi);
 }
 
 export type {
 	ContextMessage,
-	ExtensionApi,
+	ExtensionAPI as ExtensionApi,
 	ExtensionCommandContext,
-	ExtensionTool,
+	ToolDefinition as ExtensionTool,
 	GoalCommand,
 	GoalResponse,
 	GoalState,
@@ -629,4 +553,4 @@ export {
 	transitionGoal,
 };
 
-export default piGoalRalphLoopExtension;
+export default piGoalExtension;

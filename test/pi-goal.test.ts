@@ -14,9 +14,9 @@ import {
 	type ContextMessage,
 	type ExtensionApi,
 	type ExtensionCommandContext,
-	type ExtensionTool,
 	type GoalState,
 	type SessionEntry,
+	type TextToolResult,
 } from "../.pi/extensions/pi-goal/index.ts";
 
 type CommandHandler = {
@@ -25,12 +25,24 @@ type CommandHandler = {
 };
 
 type Handler = (event: Record<string, unknown>, ctx: ExtensionCommandContext) => unknown | Promise<unknown>;
+type FakeTool = {
+	name: string;
+	execute(toolCallId: string, params: Record<string, unknown>): Promise<TextToolResult<unknown>>;
+};
+type FakeMessage = {
+	customType: string;
+	content: string | unknown[];
+	display: boolean;
+	details?: unknown;
+};
+type FakeSendOptions = { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
+type NotifyLevel = "info" | "warning" | "error";
 
 interface FakePi {
 	pi: ExtensionApi;
 	ctx: ExtensionCommandContext;
 	commands: Map<string, CommandHandler>;
-	tools: Map<string, ExtensionTool<Record<string, unknown>, unknown>>;
+	tools: Map<string, FakeTool>;
 	handlers: Map<string, Handler[]>;
 	entries: SessionEntry[];
 	branchEntries: SessionEntry[];
@@ -44,7 +56,7 @@ interface FakePi {
 
 function createFakePi(): FakePi {
 	const commands = new Map<string, CommandHandler>();
-	const tools = new Map<string, ExtensionTool<Record<string, unknown>, unknown>>();
+	const tools = new Map<string, FakeTool>();
 	const handlers = new Map<string, Handler[]>();
 	const entries: SessionEntry[] = [];
 	const sentMessages: FakePi["sentMessages"] = [];
@@ -52,26 +64,30 @@ function createFakePi(): FakePi {
 	const branchEntries: SessionEntry[] = [];
 
 	const pi = {
-		appendEntry(customType, data) {
+		appendEntry(customType: string, data?: unknown) {
 			const entry = { type: "custom", customType, data };
 			entries.push(entry);
 			branchEntries.push(entry);
 		},
-		registerCommand(name, options) {
+		registerCommand(name: string, options: CommandHandler) {
 			commands.set(name, options);
 		},
-		registerTool(tool) {
-			tools.set(tool.name, tool);
+		registerTool(tool: { name: string }) {
+			tools.set(tool.name, tool as unknown as FakeTool);
 		},
 		on(event: string, handler: Handler) {
 			const list = handlers.get(event) ?? [];
 			list.push(handler);
 			handlers.set(event, list);
 		},
-		sendMessage(message, options) {
+		sendMessage(message: FakeMessage, options?: FakeSendOptions) {
+			const content = message.content;
+			if (typeof content !== "string") {
+				throw new TypeError("expected fake continuation message content to be a string");
+			}
 			const sentMessage: FakePi["sentMessages"][number]["message"] = {
 				customType: message.customType,
-				content: message.content,
+				content,
 				display: message.display,
 			};
 			if (message.details) {
@@ -83,20 +99,20 @@ function createFakePi(): FakePi {
 			}
 			sentMessages.push(sent);
 		},
-	} as ExtensionApi;
+	} as unknown as ExtensionApi;
 
-	const ctx: ExtensionCommandContext = {
+	const ctx = {
 		sessionManager: {
 			getBranch() {
 				return branchEntries;
 			},
 		},
 		ui: {
-			notify(message, level) {
+			notify(message: string, level: NotifyLevel = "info") {
 				notifications.push({ message, level });
 			},
 		},
-	};
+	} as unknown as ExtensionCommandContext;
 
 	return {
 		pi,
@@ -195,6 +211,26 @@ test("model tools enforce create and complete restrictions", async () => {
 	assert.match(resultText(read), /"status": "complete"/);
 });
 
+test("model tools return controlled errors for invalid mutations", async () => {
+	const fake = createFakePi();
+	createGoalExtension().register(fake.pi);
+
+	const createTool = fake.tools.get("create_goal");
+	const updateTool = fake.tools.get("update_goal");
+	assert.ok(createTool);
+	assert.ok(updateTool);
+
+	await assert.rejects(() => createTool.execute("call-1", { objective: "   " }), /goal objective is required/);
+	await assert.rejects(
+		() => createTool.execute("call-2", { objective: "Bad budget", token_budget: 0 }),
+		/token budget must be a positive number/,
+	);
+
+	const noGoalComplete = await updateTool.execute("call-3", { status: "complete" });
+	assert.match(resultText(noGoalComplete), /does not have an active or paused goal/);
+	assert.equal(fake.entries.length, 0);
+});
+
 test("user command persists create, pause, resume, clear transitions", async () => {
 	const fake = createFakePi();
 	createGoalExtension().register(fake.pi);
@@ -216,6 +252,25 @@ test("user command persists create, pause, resume, clear transitions", async () 
 
 	await goalCommand.handler("clear", fake.ctx);
 	assert.equal(latestGoal(fake).status, "cleared");
+});
+
+test("clearing a goal removes get_goal state and prevents continuation", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	const getTool = fake.tools.get("get_goal");
+	assert.ok(goalCommand);
+	assert.ok(getTool);
+
+	await goalCommand.handler("Implement then clear", fake.ctx);
+	await goalCommand.handler("clear", fake.ctx);
+
+	const read = await getTool.execute("call-1", {});
+	assert.match(resultText(read), /"goal": null/);
+	assert.equal(extension.scheduleContinuation(fake.pi), false);
+	assert.equal(scheduled.length, 0);
 });
 
 test("continuation prompt escapes objective and requires audit", () => {
@@ -250,6 +305,23 @@ test("continuation scheduling sends hidden trigger-turn message after deferral",
 	assert.equal(firstSentMessage(fake).message.customType, CONTINUATION_MESSAGE_TYPE);
 	assert.equal(firstSentMessage(fake).message.display, false);
 	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true });
+});
+
+test("continuation scheduling is idempotent while a continuation is pending", () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Only schedule once", 1000));
+
+	assert.equal(extension.scheduleContinuation(fake.pi), true);
+	assert.equal(extension.scheduleContinuation(fake.pi), false);
+	assert.equal(scheduled.length, 1);
+
+	const runScheduled = scheduled.shift();
+	assert.ok(runScheduled);
+	runScheduled();
+	assert.equal(fake.sentMessages.length, 1);
 });
 
 test("turn accounting tracks tools, tokens, elapsed time, and budget limit", async () => {
@@ -297,6 +369,41 @@ test("no-tool continuation suppresses future automatic continuation", async () =
 	assert.equal(shouldScheduleContinuation(latestGoal(fake)), false);
 });
 
+test("user input resets no-tool continuation suppression", async () => {
+	const fake = createFakePi();
+	const extension = createGoalExtension({ clock: () => 1_000 });
+	extension.register(fake.pi);
+	const suppressedGoal = {
+		...createGoal("Reset suppression", 1000),
+		continuationSuppressed: true,
+		lastContinuationHadToolCall: false,
+	};
+	extension.setGoalForTest(suppressedGoal);
+
+	await fake.emit("input", { text: "continue", source: "interactive" });
+
+	const current = extension.currentGoal;
+	assert.ok(current);
+	assert.equal(current.continuationSuppressed, false);
+	assert.equal(current.lastContinuationHadToolCall, true);
+	assert.equal(shouldScheduleContinuation(current), true);
+});
+
+test("plan mode suppresses automatic continuation until a normal prompt arrives", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Respect plan mode", 1000));
+
+	await fake.emit("before_agent_start", { prompt: "[PLAN MODE ACTIVE] inspect only" });
+	assert.equal(extension.scheduleContinuation(fake.pi), false);
+
+	await fake.emit("before_agent_start", { prompt: "implement now" });
+	assert.equal(extension.scheduleContinuation(fake.pi), true);
+	assert.equal(scheduled.length, 1);
+});
+
 test("context hook prunes stale continuation messages", async () => {
 	const fake = createFakePi();
 	const extension = createGoalExtension();
@@ -322,6 +429,32 @@ test("context hook prunes stale continuation messages", async () => {
 	assert.ok(result);
 	assert.equal(result.messages.length, 2);
 	assert.equal(firstContextMessage(result).details?.goalId, active.goalId);
+});
+
+test("context hook prunes continuation messages for cleared goals", async () => {
+	const fake = createFakePi();
+	const extension = createGoalExtension();
+	extension.register(fake.pi);
+	const cleared = transitionGoal(createGoal("Cleared"), "cleared");
+	extension.setGoalForTest(cleared);
+
+	let result: { messages: ContextMessage[] } | undefined;
+	for (const handler of fake.handlers.get("context") ?? []) {
+		result = (await handler(
+			{
+				type: "context",
+				messages: [
+					{ role: "custom", customType: CONTINUATION_MESSAGE_TYPE, details: { goalId: cleared.goalId } },
+					{ role: "user", content: [{ type: "text", text: "hello" }] },
+				],
+			},
+			fake.ctx,
+		)) as { messages: ContextMessage[] };
+	}
+
+	assert.ok(result);
+	assert.equal(result.messages.length, 1);
+	assert.equal(result.messages[0]?.customType, undefined);
 });
 
 test("restores latest goal from custom branch entries", () => {

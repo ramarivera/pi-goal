@@ -1,4 +1,4 @@
-# Pi Goal / Ralph Loop Context Research
+# Pi Goal Continuation Context Research
 
 Date: 2026-05-02
 
@@ -12,7 +12,7 @@ Date: 2026-05-02
 
 ## Short Conclusion
 
-Pi does not need a new core primitive to implement a solid Codex-style goal/Ralph loop as an extension.
+Pi does not need a new core primitive to implement a solid Codex-style goal continuation as an extension.
 
 The extension-level implementation should use hidden custom messages with `display: false` plus `triggerTurn: true`, scheduled after the current `agent_end` listener unwinds. A core primitive would still be cleaner for exact Codex parity, but the source evidence says it is not strictly required.
 
@@ -61,7 +61,7 @@ Inference:
 
 ## Opencode Prior Art
 
-Opencode does not appear to provide a persisted goal/Ralph-loop feature, but it shows adjacent loop mechanics.
+Opencode does not appear to provide a persisted goal-continuation feature, but it shows adjacent loop mechanics.
 
 Observed facts:
 
