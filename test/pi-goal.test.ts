@@ -47,11 +47,14 @@ interface FakePi {
 	handlers: Map<string, Handler[]>;
 	entries: SessionEntry[];
 	branchEntries: SessionEntry[];
+	sentUserMessages: Array<{ content: string | unknown[]; options?: { deliverAs?: "steer" | "followUp" } }>;
 	sentMessages: Array<{
 		message: { customType: string; content: string; display: boolean; details?: { goalId: string } };
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
 	}>;
 	notifications: Array<{ message: string; level: "info" | "warning" | "error" }>;
+	operations: string[];
+	setIdle(idle: boolean): void;
 	emit(event: string, payload: Record<string, unknown>): Promise<unknown[]>;
 }
 
@@ -60,15 +63,19 @@ function createFakePi(): FakePi {
 	const tools = new Map<string, FakeTool>();
 	const handlers = new Map<string, Handler[]>();
 	const entries: SessionEntry[] = [];
+	const sentUserMessages: FakePi["sentUserMessages"] = [];
 	const sentMessages: FakePi["sentMessages"] = [];
 	const notifications: FakePi["notifications"] = [];
 	const branchEntries: SessionEntry[] = [];
+	const operations: string[] = [];
+	let idle = true;
 
 	const pi = {
 		appendEntry(customType: string, data?: unknown) {
 			const entry = { type: "custom", customType, data };
 			entries.push(entry);
 			branchEntries.push(entry);
+			operations.push(`append:${customType}`);
 		},
 		registerCommand(name: string, options: CommandHandler) {
 			commands.set(name, options);
@@ -100,6 +107,14 @@ function createFakePi(): FakePi {
 			}
 			sentMessages.push(sent);
 		},
+		sendUserMessage(content: string | unknown[], options?: { deliverAs?: "steer" | "followUp" }) {
+			const sent: FakePi["sentUserMessages"][number] = { content };
+			if (options) {
+				sent.options = options;
+			}
+			sentUserMessages.push(sent);
+			operations.push("sendUserMessage");
+		},
 	} as unknown as ExtensionApi;
 
 	const ctx = {
@@ -111,7 +126,11 @@ function createFakePi(): FakePi {
 		ui: {
 			notify(message: string, level: NotifyLevel = "info") {
 				notifications.push({ message, level });
+				operations.push("notify");
 			},
+		},
+		isIdle() {
+			return idle;
 		},
 	} as unknown as ExtensionCommandContext;
 
@@ -123,8 +142,13 @@ function createFakePi(): FakePi {
 		handlers,
 		entries,
 		branchEntries,
+		sentUserMessages,
 		sentMessages,
 		notifications,
+		operations,
+		setIdle(nextIdle) {
+			idle = nextIdle;
+		},
 		async emit(event, payload) {
 			const results: unknown[] = [];
 			for (const handler of handlers.get(event) ?? []) {
@@ -253,6 +277,47 @@ test("user command persists create, pause, resume, clear transitions", async () 
 
 	await goalCommand.handler("clear", fake.ctx);
 	assert.equal(latestGoal(fake).status, "cleared");
+});
+
+test("user command auto-submits the objective after persisting a new goal", async () => {
+	const fake = createFakePi();
+	createGoalExtension().register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+
+	await goalCommand.handler("Implement loop --budget 100", fake.ctx);
+
+	assert.equal(latestGoal(fake).objective, "Implement loop");
+	assert.deepEqual(fake.sentUserMessages, [{ content: "Implement loop" }]);
+	assert.deepEqual(fake.operations.slice(0, 2), ["append:pi-goal-state", "sendUserMessage"]);
+});
+
+test("user command queues the auto-submitted objective when the agent is busy", async () => {
+	const fake = createFakePi();
+	fake.setIdle(false);
+	createGoalExtension().register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+
+	await goalCommand.handler("Continue after current turn", fake.ctx);
+
+	assert.deepEqual(fake.sentUserMessages, [{ content: "Continue after current turn", options: { deliverAs: "followUp" } }]);
+});
+
+test("user command does not auto-submit rejected duplicate goals", async () => {
+	const fake = createFakePi();
+	createGoalExtension().register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+
+	await goalCommand.handler("First goal", fake.ctx);
+	await goalCommand.handler("Second goal", fake.ctx);
+
+	assert.equal(latestGoal(fake).objective, "First goal");
+	assert.deepEqual(
+		fake.sentUserMessages.map((message) => message.content),
+		["First goal"],
+	);
 });
 
 test("clearing a goal removes get_goal state and prevents continuation", async () => {

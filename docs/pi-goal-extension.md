@@ -41,6 +41,8 @@ local_update_goal
 
 In this repository's project-local extension, use `/local-goal` with the same subcommands and arguments.
 
+When `/goal <objective>` or `/local-goal <objective>` creates a new goal, the extension first persists the goal state and then submits the objective as a user message. If the agent is idle, the message starts immediately; if a turn is already running, it is queued as a follow-up.
+
 ## Model Tools
 
 The extension registers three model tools:

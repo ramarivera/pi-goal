@@ -475,6 +475,14 @@ function makeTextResult<TDetails>(payload: TDetails): TextToolResult<TDetails> {
 	};
 }
 
+function submitGoalObjective(pi: ExtensionAPI, ctx: ExtensionCommandContext, objective: string): void {
+	if (ctx.isIdle()) {
+		pi.sendUserMessage(objective);
+		return;
+	}
+	pi.sendUserMessage(objective, { deliverAs: "followUp" });
+}
+
 function createGoalExtension(options: GoalExtensionOptions = {}) {
 	const scheduler = options.scheduler ?? ((fn: () => void) => setTimeout(fn, 0));
 	const clock = options.clock ?? now;
@@ -555,6 +563,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 							return;
 						}
 						setGoal(pi, createGoal(parsed.objective, parsed.tokenBudget));
+						submitGoalObjective(pi, ctx, parsed.objective);
 						ctx.ui.notify(`Goal created:\n${formatGoalStatus(currentGoal)}`, "info");
 						return;
 					}

@@ -36,6 +36,8 @@ To avoid collisions when the published package is also installed globally, the p
 /goal clear
 ```
 
+Creating a goal also submits the objective as the next user message after the goal state is persisted, so the agent starts working on it immediately.
+
 When developing from this repository with the global package installed, use the local command names:
 
 ```text
