@@ -63,7 +63,7 @@ test("Pi SDK discovers the project-local pi-goal extension", async () => {
 	);
 });
 
-test("Pi SDK executes /goal commands through the live extension runtime", async () => {
+test("Pi SDK executes /local-goal commands through the live project extension runtime", async () => {
 	const loader = new DefaultResourceLoader({
 		cwd: repoRoot,
 		agentDir,
@@ -84,7 +84,7 @@ test("Pi SDK executes /goal commands through the live extension runtime", async 
 
 	try {
 		await session.bindExtensions({});
-		await session.prompt("/goal Implement SDK e2e --budget 123");
+		await session.prompt("/local-goal Implement SDK e2e --budget 123");
 		let goal = latestGoal(session.sessionManager.getEntries());
 		assert.equal(goal.objective, "Implement SDK e2e");
 		assert.equal(goal.status, "active");
@@ -92,15 +92,15 @@ test("Pi SDK executes /goal commands through the live extension runtime", async 
 		assert.equal(goal.tokensUsed, 0);
 		assert.equal(goal.timeUsedSeconds, 0);
 
-		await session.prompt("/goal pause");
+		await session.prompt("/local-goal pause");
 		goal = latestGoal(session.sessionManager.getEntries());
 		assert.equal(goal.status, "paused");
 
-		await session.prompt("/goal resume");
+		await session.prompt("/local-goal resume");
 		goal = latestGoal(session.sessionManager.getEntries());
 		assert.equal(goal.status, "active");
 
-		await session.prompt("/goal clear");
+		await session.prompt("/local-goal clear");
 		goal = latestGoal(session.sessionManager.getEntries());
 		assert.equal(goal.status, "cleared");
 	} finally {
@@ -129,14 +129,14 @@ test("Pi SDK exposes pi-goal commands and model tools through live runtime contr
 
 	try {
 		await session.bindExtensions({});
-		assert.ok(session.extensionRunner.getCommand("goal"), "expected /goal command to be registered");
+		assert.ok(session.extensionRunner.getCommand("local-goal"), "expected /local-goal command to be registered");
 		const toolNames = session.extensionRunner.getAllRegisteredTools().map((tool) => tool.definition.name);
-		assert.ok(toolNames.includes("get_goal"), "expected get_goal tool to be registered");
-		assert.ok(toolNames.includes("create_goal"), "expected create_goal tool to be registered");
-		assert.ok(toolNames.includes("update_goal"), "expected update_goal tool to be registered");
+		assert.ok(toolNames.includes("local_get_goal"), "expected local_get_goal tool to be registered");
+		assert.ok(toolNames.includes("local_create_goal"), "expected local_create_goal tool to be registered");
+		assert.ok(toolNames.includes("local_update_goal"), "expected local_update_goal tool to be registered");
 
-		const updateGoal = session.extensionRunner.getToolDefinition("update_goal");
-		assert.ok(updateGoal, "expected update_goal definition to be retrievable");
+		const updateGoal = session.extensionRunner.getToolDefinition("local_update_goal");
+		assert.ok(updateGoal, "expected local_update_goal definition to be retrievable");
 		const result = await updateGoal.execute(
 			"call-no-goal",
 			{ status: "complete" },
@@ -175,7 +175,7 @@ test("Pi SDK restores persisted goal state after reopening a file-backed session
 
 		try {
 			await first.session.bindExtensions({});
-			await first.session.prompt("/goal Persist across reopen --budget 77");
+			await first.session.prompt("/local-goal Persist across reopen --budget 77");
 			sessionFile = first.session.exportToJsonl(join(sessionDir, "persisted-goal-session.jsonl"));
 			const created = latestGoal(first.session.sessionManager.getEntries());
 			assert.equal(created.status, "active");
@@ -204,7 +204,7 @@ test("Pi SDK restores persisted goal state after reopening a file-backed session
 
 		try {
 			await reopened.session.bindExtensions({});
-			await reopened.session.prompt("/goal pause");
+			await reopened.session.prompt("/local-goal pause");
 			const restoredAndPaused = latestGoal(reopened.session.sessionManager.getEntries());
 			assert.equal(restoredAndPaused.objective, "Persist across reopen");
 			assert.equal(restoredAndPaused.status, "paused");

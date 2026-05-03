@@ -18,6 +18,15 @@ This extension is already in that shape:
 .pi/extensions/pi-goal/index.ts
 ```
 
+The publishable package registers the canonical `/goal` command and `get_goal`, `create_goal`, and `update_goal` tools. The project-local shim registers prefixed names so this repository can be opened while the published package is installed globally:
+
+```text
+/local-goal
+local_get_goal
+local_create_goal
+local_update_goal
+```
+
 ## User Commands
 
 ```text
@@ -30,6 +39,8 @@ This extension is already in that shape:
 /goal clear
 ```
 
+In this repository's project-local extension, use `/local-goal` with the same subcommands and arguments.
+
 ## Model Tools
 
 The extension registers three model tools:
@@ -39,6 +50,8 @@ The extension registers three model tools:
 - `update_goal`: only accepts `{ "status": "complete" }`.
 
 Pause, resume, clear, and budget-limited transitions stay user/system controlled.
+
+Goal status includes readable elapsed time, active-goal turn count, hidden continuation instruction count, input/output/reasoning/cache token breakdowns, cost totals, and per-model usage rollups when the provider exposes those fields.
 
 ## Continuation Behavior
 
@@ -83,5 +96,5 @@ openspec validate add-pi-goal --strict
 ```
 
 `npm test` includes a Pi SDK e2e check that loads the project-local extension through
-`DefaultResourceLoader`, creates an in-memory `AgentSession`, runs `/goal` commands,
+`DefaultResourceLoader`, creates an in-memory `AgentSession`, runs `/local-goal` commands,
 and verifies the persisted `pi-goal-state` custom entries.

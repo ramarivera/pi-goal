@@ -23,6 +23,7 @@ For local development, Pi discovers the project-local shim from:
 ```
 
 That shim imports the real source entrypoint and is intentionally not part of the package payload.
+To avoid collisions when the published package is also installed globally, the project-local shim registers `/local-goal` and `local_get_goal` / `local_create_goal` / `local_update_goal`.
 
 ## Commands
 
@@ -33,6 +34,17 @@ That shim imports the real source entrypoint and is intentionally not part of th
 /goal pause
 /goal resume
 /goal clear
+```
+
+When developing from this repository with the global package installed, use the local command names:
+
+```text
+/local-goal <objective>
+/local-goal <objective> --budget 10000
+/local-goal status
+/local-goal pause
+/local-goal resume
+/local-goal clear
 ```
 
 See `docs/pi-goal-extension.md` for behavior and test details.

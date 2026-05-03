@@ -17,6 +17,10 @@ interface GoalState {
 	status: GoalStatus;
 	tokenBudget: number | undefined;
 	tokensUsed: number;
+	usage: GoalUsage;
+	usageByModel: Record<string, GoalUsage>;
+	turnCount: number;
+	continuationCount: number;
 	timeUsedSeconds: number;
 	createdAt: number;
 	updatedAt: number;
@@ -62,6 +66,9 @@ interface UsageCarrier {
 		usage?: UsageShape;
 	};
 	tokens?: UsageShape;
+	provider?: string;
+	model?: string;
+	responseModel?: string;
 	[key: string]: unknown;
 }
 
@@ -74,13 +81,39 @@ interface UsageShape {
 	completionTokens?: number;
 	reasoning?: number;
 	reasoningTokens?: number;
+	cacheRead?: number;
+	cacheReadTokens?: number;
+	cacheWrite?: number;
+	cacheWriteTokens?: number;
 	total?: number;
 	totalTokens?: number;
+	cost?: Partial<GoalCost>;
+	[key: string]: unknown;
+}
+
+interface GoalCost {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+}
+
+interface GoalUsage {
+	input: number;
+	output: number;
+	reasoning: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	cost: GoalCost;
 }
 
 interface GoalExtensionOptions {
 	scheduler?: (fn: () => void) => void;
 	clock?: () => number;
+	commandName?: string;
+	toolNamePrefix?: string;
 }
 
 const ENTRY_TYPE = "pi-goal-state";
@@ -131,6 +164,10 @@ function createGoal(objective: unknown, tokenBudget?: unknown): GoalState {
 		status: "active",
 		tokenBudget: normalizeBudget(tokenBudget),
 		tokensUsed: 0,
+		usage: emptyUsage(),
+		usageByModel: {},
+		turnCount: 0,
+		continuationCount: 0,
 		timeUsedSeconds: 0,
 		createdAt: timestamp,
 		updatedAt: timestamp,
@@ -140,8 +177,68 @@ function createGoal(objective: unknown, tokenBudget?: unknown): GoalState {
 	};
 }
 
+function emptyCost(): GoalCost {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+}
+
+function emptyUsage(): GoalUsage {
+	return { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: emptyCost() };
+}
+
+function addUsage(left: GoalUsage, right: GoalUsage): GoalUsage {
+	return {
+		input: left.input + right.input,
+		output: left.output + right.output,
+		reasoning: left.reasoning + right.reasoning,
+		cacheRead: left.cacheRead + right.cacheRead,
+		cacheWrite: left.cacheWrite + right.cacheWrite,
+		total: left.total + right.total,
+		cost: {
+			input: left.cost.input + right.cost.input,
+			output: left.cost.output + right.cost.output,
+			cacheRead: left.cost.cacheRead + right.cost.cacheRead,
+			cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
+			total: left.cost.total + right.cost.total,
+		},
+	};
+}
+
+function normalizeUsage(value: Partial<GoalUsage> | undefined): GoalUsage {
+	const usage = value ?? {};
+	const cost: Partial<GoalCost> = usage.cost ?? {};
+	return {
+		input: Math.max(0, Number(usage.input ?? 0)),
+		output: Math.max(0, Number(usage.output ?? 0)),
+		reasoning: Math.max(0, Number(usage.reasoning ?? 0)),
+		cacheRead: Math.max(0, Number(usage.cacheRead ?? 0)),
+		cacheWrite: Math.max(0, Number(usage.cacheWrite ?? 0)),
+		total: Math.max(0, Number(usage.total ?? 0)),
+		cost: {
+			input: Math.max(0, Number(cost.input ?? 0)),
+			output: Math.max(0, Number(cost.output ?? 0)),
+			cacheRead: Math.max(0, Number(cost.cacheRead ?? 0)),
+			cacheWrite: Math.max(0, Number(cost.cacheWrite ?? 0)),
+			total: Math.max(0, Number(cost.total ?? 0)),
+		},
+	};
+}
+
+function normalizeGoal(goal: GoalState): GoalState {
+	const usage = normalizeUsage(goal.usage ?? ({ total: goal.tokensUsed } as Partial<GoalUsage>));
+	return {
+		...goal,
+		tokensUsed: goal.tokensUsed ?? usage.total,
+		usage,
+		usageByModel: Object.fromEntries(
+			Object.entries(goal.usageByModel ?? {}).map(([model, modelUsage]) => [model, normalizeUsage(modelUsage)]),
+		),
+		turnCount: Math.max(0, Number(goal.turnCount ?? 0)),
+		continuationCount: Math.max(0, Number(goal.continuationCount ?? 0)),
+	};
+}
+
 function cloneGoal(goal: GoalState | undefined): GoalState | undefined {
-	return goal ? { ...goal } : undefined;
+	return goal ? normalizeGoal({ ...goal }) : undefined;
 }
 
 function transitionGoal(goal: GoalState | undefined, status: GoalStatus): GoalState {
@@ -164,7 +261,8 @@ function goalResponse(goal: GoalState | undefined): GoalResponse {
 		current?.status === "complete"
 			? [
 					current.tokenBudget === undefined ? undefined : `tokens used: ${current.tokensUsed} of ${current.tokenBudget}`,
-					current.timeUsedSeconds > 0 ? `time used: ${current.timeUsedSeconds} seconds` : undefined,
+					current.timeUsedSeconds > 0 ? `time used: ${formatDuration(current.timeUsedSeconds)}` : undefined,
+					current.usage.cost.total > 0 ? `cost: ${formatCost(current.usage.cost.total)}` : undefined,
 				]
 					.filter((line): line is string => Boolean(line))
 					.join("; ")
@@ -178,19 +276,61 @@ function goalResponse(goal: GoalState | undefined): GoalResponse {
 	};
 }
 
+function formatInteger(value: number): string {
+	return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatCost(value: number): string {
+	return `$${value.toFixed(6)}`;
+}
+
+function formatDuration(seconds: number): string {
+	const wholeSeconds = Math.max(0, Math.floor(seconds));
+	const hours = Math.floor(wholeSeconds / 3600);
+	const minutes = Math.floor((wholeSeconds % 3600) / 60);
+	const remainingSeconds = wholeSeconds % 60;
+	const parts: string[] = [];
+	if (hours > 0) parts.push(`${hours}h`);
+	if (minutes > 0) parts.push(`${minutes}m`);
+	if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds}s`);
+	const compact = parts.join(" ");
+	return wholeSeconds >= 60 ? `${compact} (${formatInteger(wholeSeconds)} seconds)` : compact;
+}
+
+function formatUsageLine(usage: GoalUsage): string {
+	return [
+		`${formatInteger(usage.total)} total`,
+		`input: ${formatInteger(usage.input)}`,
+		`output: ${formatInteger(usage.output)}`,
+		`reasoning: ${formatInteger(usage.reasoning)}`,
+		`cache read: ${formatInteger(usage.cacheRead)}`,
+		`cache write: ${formatInteger(usage.cacheWrite)}`,
+	].join(", ");
+}
+
 function formatGoalStatus(goal: GoalState | undefined): string {
 	if (!goal) return "No active goal.";
+	const normalized = normalizeGoal(goal);
 	const lines = [
-		`Goal: ${goal.objective}`,
-		`Status: ${goal.status}`,
-		`Tokens used: ${goal.tokensUsed}`,
-		`Time used: ${goal.timeUsedSeconds} seconds`,
+		`Goal: ${normalized.objective}`,
+		`Status: ${normalized.status}`,
+		`Turns: ${normalized.turnCount}`,
+		`Goal instructions: ${normalized.continuationCount}`,
+		`Tokens used: ${formatUsageLine(normalized.usage)}`,
+		`Cost: ${formatCost(normalized.usage.cost.total)}`,
+		`Time used: ${formatDuration(normalized.timeUsedSeconds)}`,
 	];
-	if (goal.tokenBudget !== undefined) {
-		lines.push(`Token budget: ${goal.tokenBudget}`);
-		lines.push(`Tokens remaining: ${Math.max(0, goal.tokenBudget - goal.tokensUsed)}`);
+	if (Object.keys(normalized.usageByModel).length > 0) {
+		lines.push("Models:");
+		for (const [model, usage] of Object.entries(normalized.usageByModel).sort(([left], [right]) => left.localeCompare(right))) {
+			lines.push(`  ${model}: ${formatUsageLine(usage)}, cost: ${formatCost(usage.cost.total)}`);
+		}
 	}
-	if (goal.continuationSuppressed) {
+	if (normalized.tokenBudget !== undefined) {
+		lines.push(`Token budget: ${formatInteger(normalized.tokenBudget)}`);
+		lines.push(`Tokens remaining: ${formatInteger(Math.max(0, normalized.tokenBudget - normalized.tokensUsed))}`);
+	}
+	if (normalized.continuationSuppressed) {
 		lines.push("Continuation: suppressed until user input or resume");
 	}
 	return lines.join("\n");
@@ -211,8 +351,8 @@ ${objective}
 </untrusted_objective>
 
 Budget:
-- Time spent pursuing goal: ${goal.timeUsedSeconds} seconds
-- Tokens used: ${goal.tokensUsed}
+- Time spent pursuing goal: ${formatDuration(goal.timeUsedSeconds)}
+- Tokens used: ${formatUsageLine(normalizeUsage(goal.usage))}
 - Token budget: ${tokenBudget}
 - Tokens remaining: ${remainingTokens}
 
@@ -253,15 +393,52 @@ function parseGoalArgs(args: unknown): GoalCommand {
 	return { action: "create", objective, tokenBudget, rest };
 }
 
-function extractTokenUsage(message: UsageCarrier | undefined): number {
+function numberFrom(value: unknown): number {
+	const number = Number(value ?? 0);
+	return Number.isFinite(number) ? Math.max(0, number) : 0;
+}
+
+function extractUsageAccounting(message: UsageCarrier | undefined): GoalUsage {
 	const usage = message?.usage ?? message?.metadata?.usage ?? message?.tokens;
-	if (!usage) return 0;
-	const input = Number(usage.input ?? usage.inputTokens ?? usage.promptTokens ?? 0);
-	const output = Number(usage.output ?? usage.outputTokens ?? usage.completionTokens ?? 0);
-	const reasoning = Number(usage.reasoning ?? usage.reasoningTokens ?? 0);
-	const total = Number(usage.total ?? usage.totalTokens ?? 0);
-	if (Number.isFinite(total) && total > 0) return Math.floor(total);
-	return [input, output, reasoning].filter(Number.isFinite).reduce((sum, value) => sum + Math.max(0, value), 0);
+	if (!usage) return emptyUsage();
+	const input = numberFrom(usage.input ?? usage.inputTokens ?? usage.promptTokens);
+	const output = numberFrom(usage.output ?? usage.outputTokens ?? usage.completionTokens);
+	const reasoning = numberFrom(usage.reasoning ?? usage.reasoningTokens);
+	const cacheRead = numberFrom(usage.cacheRead ?? usage.cacheReadTokens ?? usage.cachedInputTokens);
+	const cacheWrite = numberFrom(usage.cacheWrite ?? usage.cacheWriteTokens);
+	const explicitTotal = numberFrom(usage.total ?? usage.totalTokens);
+	const total = explicitTotal > 0 ? explicitTotal : input + output + reasoning + cacheRead + cacheWrite;
+	const cost = usage.cost ?? {};
+	return {
+		input: Math.floor(input),
+		output: Math.floor(output),
+		reasoning: Math.floor(reasoning),
+		cacheRead: Math.floor(cacheRead),
+		cacheWrite: Math.floor(cacheWrite),
+		total: Math.floor(total),
+		cost: {
+			input: numberFrom(cost.input),
+			output: numberFrom(cost.output),
+			cacheRead: numberFrom(cost.cacheRead),
+			cacheWrite: numberFrom(cost.cacheWrite),
+			total: numberFrom(cost.total),
+		},
+	};
+}
+
+function extractTokenUsage(message: UsageCarrier | undefined): number {
+	return extractUsageAccounting(message).total;
+}
+
+function getModelUsageKey(message: UsageCarrier | undefined): string {
+	const provider = typeof message?.provider === "string" && message.provider ? message.provider : "unknown";
+	const model =
+		typeof message?.responseModel === "string" && message.responseModel
+			? message.responseModel
+			: typeof message?.model === "string" && message.model
+				? message.model
+				: "unknown";
+	return `${provider}/${model}`;
 }
 
 function shouldScheduleContinuation(goal: GoalState | undefined, options: { planModeActive?: boolean } = {}): boolean {
@@ -284,7 +461,7 @@ function readLatestGoalFromBranch(branchEntries: SessionEntry[] | undefined): Go
 	let latest: GoalState | undefined;
 	for (const entry of branchEntries ?? []) {
 		if (entry?.type === "custom" && entry.customType === ENTRY_TYPE && isGoalState(entry.data)) {
-			latest = entry.data;
+			latest = normalizeGoal(entry.data);
 		}
 	}
 	if (!latest || latest.status === "cleared") return undefined;
@@ -301,6 +478,8 @@ function makeTextResult<TDetails>(payload: TDetails): TextToolResult<TDetails> {
 function createGoalExtension(options: GoalExtensionOptions = {}) {
 	const scheduler = options.scheduler ?? ((fn: () => void) => setTimeout(fn, 0));
 	const clock = options.clock ?? now;
+	const commandName = options.commandName ?? "goal";
+	const toolNamePrefix = options.toolNamePrefix ?? "";
 	let currentGoal: GoalState | undefined;
 	let activeTurnStartedAt: number | undefined;
 	let currentTurnHadTool = false;
@@ -339,7 +518,12 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			if (!currentGoal || currentGoal.goalId !== goalId) return;
 			if (!shouldScheduleContinuation({ ...currentGoal, continuationScheduled: false }, { planModeActive })) return;
 			awaitingContinuationGoalId = goalId;
-			currentGoal = { ...currentGoal, continuationScheduled: false, updatedAt: clock() };
+			currentGoal = {
+				...currentGoal,
+				continuationCount: (currentGoal.continuationCount ?? 0) + 1,
+				continuationScheduled: false,
+				updatedAt: clock(),
+			};
 			const continuationGoal = currentGoal;
 			persist(pi);
 			pi.sendMessage(
@@ -356,8 +540,8 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 	}
 
 	function register(pi: ExtensionAPI): void {
-		pi.registerCommand("goal", {
-			description: "Manage a persisted goal continuation: /goal <objective>, /goal status, /goal pause, /goal resume, /goal clear",
+		pi.registerCommand(commandName, {
+			description: `Manage a persisted goal continuation: /${commandName} <objective>, /${commandName} status, /${commandName} pause, /${commandName} resume, /${commandName} clear`,
 			handler: async (args, ctx) => {
 				try {
 					const parsed = parseGoalArgs(args);
@@ -396,7 +580,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		});
 
 		const getGoalTool: ToolDefinition<typeof EMPTY_SCHEMA, GoalResponse, unknown> = {
-			name: "get_goal",
+			name: `${toolNamePrefix}get_goal`,
 			label: "Get Goal",
 			description: "Return the current persisted goal state, if any.",
 			parameters: EMPTY_SCHEMA,
@@ -407,7 +591,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		pi.registerTool(getGoalTool);
 
 		const createGoalTool: ToolDefinition<typeof CREATE_GOAL_SCHEMA, GoalResponse | { error: string; goal: GoalState }, unknown> = {
-			name: "create_goal",
+			name: `${toolNamePrefix}create_goal`,
 			label: "Create Goal",
 			description: "Create one active persisted goal when no active or paused goal exists.",
 			parameters: CREATE_GOAL_SCHEMA,
@@ -425,7 +609,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		pi.registerTool(createGoalTool);
 
 		const updateGoalTool: ToolDefinition<typeof UPDATE_GOAL_SCHEMA, GoalResponse | { error: string }, unknown> = {
-			name: "update_goal",
+			name: `${toolNamePrefix}update_goal`,
 			label: "Update Goal",
 			description: 'Mark the current goal complete. Only status "complete" is accepted.',
 			parameters: UPDATE_GOAL_SCHEMA,
@@ -489,10 +673,16 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			if (!currentGoal?.status || currentGoal.status !== "active") return;
 			const endedAt = clock();
 			const elapsed = activeTurnStartedAt ? Math.max(0, Math.floor((endedAt - activeTurnStartedAt) / 1000)) : 0;
-			const tokens = extractTokenUsage(goalTurnEnd.message);
+			const usage = extractUsageAccounting(goalTurnEnd.message);
+			const modelKey = getModelUsageKey(goalTurnEnd.message);
+			const usageByModel = { ...currentGoal.usageByModel };
+			usageByModel[modelKey] = addUsage(normalizeUsage(usageByModel[modelKey]), usage);
 			currentGoal = {
 				...currentGoal,
-				tokensUsed: currentGoal.tokensUsed + tokens,
+				tokensUsed: currentGoal.tokensUsed + usage.total,
+				usage: addUsage(normalizeUsage(currentGoal.usage), usage),
+				usageByModel,
+				turnCount: (currentGoal.turnCount ?? 0) + 1,
 				timeUsedSeconds: currentGoal.timeUsedSeconds + elapsed,
 				lastContinuationHadToolCall: currentTurnHadTool,
 				continuationSuppressed: currentTurnIsContinuation && !currentTurnHadTool,

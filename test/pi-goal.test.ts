@@ -5,6 +5,7 @@ import {
 	createGoal,
 	createGoalExtension,
 	extractTokenUsage,
+	formatGoalStatus,
 	goalResponse,
 	parseGoalArgs,
 	readLatestGoalFromBranch,
@@ -346,6 +347,75 @@ test("turn accounting tracks tools, tokens, elapsed time, and budget limit", asy
 	assert.equal(latest.status, "budget_limited");
 });
 
+test("turn accounting tracks detailed usage, costs, turns, and model breakdowns", async () => {
+	let currentTime = 1_000;
+	const fake = createFakePi();
+	const extension = createGoalExtension({ clock: () => currentTime });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Detailed accounting", 100_000));
+
+	await fake.emit("turn_start", { turnIndex: 1, timestamp: 1_000 });
+	currentTime = 124_000;
+	await fake.emit("turn_end", {
+		turnIndex: 1,
+		message: {
+			role: "assistant",
+			provider: "openai-codex",
+			model: "gpt-5.4-mini",
+			content: [],
+			usage: {
+				input: 1_000,
+				output: 200,
+				cacheRead: 700,
+				cacheWrite: 50,
+				totalTokens: 1_950,
+				cost: { input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037 },
+			},
+		},
+		toolResults: [],
+	});
+
+	const latest = latestGoal(fake);
+	assert.equal(latest.tokensUsed, 1_950);
+	assert.equal(latest.turnCount, 1);
+	assert.equal(latest.timeUsedSeconds, 123);
+	assert.deepEqual(latest.usage, {
+		input: 1_000,
+		output: 200,
+		reasoning: 0,
+		cacheRead: 700,
+		cacheWrite: 50,
+		total: 1_950,
+		cost: { input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037 },
+	});
+	assert.equal(latest.usageByModel["openai-codex/gpt-5.4-mini"]?.total, 1_950);
+
+	const status = formatGoalStatus(latest);
+	assert.match(status, /Time used: 2m 3s \(123 seconds\)/);
+	assert.match(status, /Turns: 1/);
+	assert.match(status, /Tokens used: 1,950 total/);
+	assert.match(status, /input: 1,000/);
+	assert.match(status, /cache read: 700/);
+	assert.match(status, /Cost: \$0\.037000/);
+	assert.match(status, /openai-codex\/gpt-5\.4-mini: 1,950 total/);
+});
+
+test("continuation scheduling counts hidden goal reinstructions", () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Count continuation prompts", 1000));
+
+	assert.equal(extension.scheduleContinuation(fake.pi), true);
+	const runScheduled = scheduled.shift();
+	assert.ok(runScheduled);
+	runScheduled();
+
+	assert.equal(latestGoal(fake).continuationCount, 1);
+	assert.match(formatGoalStatus(latestGoal(fake)), /Goal instructions: 1/);
+});
+
 test("no-tool continuation suppresses future automatic continuation", async () => {
 	const scheduled: Array<() => void> = [];
 	const fake = createFakePi();
@@ -473,6 +543,7 @@ test("usage extraction supports common provider shapes", () => {
 	assert.equal(extractTokenUsage({ usage: { total: 9 } }), 9);
 	assert.equal(extractTokenUsage({ usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 4 } }), 9);
 	assert.equal(extractTokenUsage({ tokens: { input: 2, output: 3 } }), 5);
+	assert.equal(extractTokenUsage({ usage: { totalTokens: 9, cacheRead: 4, cacheWrite: 1 } }), 9);
 	assert.equal(extractTokenUsage({}), 0);
 });
 
@@ -480,5 +551,5 @@ test("goal response includes final budget report only on completion", () => {
 	const active = createGoal("Report", 10);
 	assert.equal(goalResponse(active).completionBudgetReport, undefined);
 	const complete = transitionGoal({ ...active, tokensUsed: 7, timeUsedSeconds: 2 }, "complete");
-	assert.match(goalResponse(complete).completionBudgetReport ?? "", /tokens used: 7 of 10; time used: 2 seconds/);
+	assert.match(goalResponse(complete).completionBudgetReport ?? "", /tokens used: 7 of 10; time used: 2s/);
 });
