@@ -73,9 +73,25 @@ pi.sendMessage(
 
 The extension deliberately does not call `agent.continue()` from an assistant-terminal state.
 
+## Structured Tracing
+
+The extension emits Pino JSON traces to `~/.pi/logs/pi-goal.log` by default. Set `PI_GOAL_LOG_LEVEL=debug` when investigating continuation behavior.
+
+Useful knobs:
+
+```text
+PI_GOAL_LOG_LEVEL=debug
+PI_GOAL_LOG_FILE=/tmp/pi-goal.log
+PI_GOAL_LOG_FILE=stdout
+PI_GOAL_LOG=0
+```
+
+Trace events cover command handling, model tool calls, state persistence, objective auto-submit delivery mode, lifecycle hooks, context pruning, continuation block reasons, hidden trigger sends, turn accounting, and budget exhaustion. Logs avoid writing full objective text or hidden continuation prompt bodies; use goal ids and counters to correlate events.
+
 ## Guardrails
 
 - The continuation prompt treats the objective as untrusted user data.
+- The continuation prompt explicitly identifies itself as an internal hidden `pi-goal` continuation, not a new human/user message.
 - The model must perform a completion audit before calling `update_goal`.
 - No-tool continuation turns suppress further automatic continuation.
 - Paused, complete, budget-limited, cleared, or absent goals do not continue.

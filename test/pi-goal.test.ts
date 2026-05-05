@@ -16,6 +16,7 @@ import {
 	type ExtensionApi,
 	type ExtensionCommandContext,
 	type GoalState,
+	type GoalLogger,
 	type SessionEntry,
 	type TextToolResult,
 } from "../.pi/extensions/pi-goal/index.ts";
@@ -38,6 +39,7 @@ type FakeMessage = {
 };
 type FakeSendOptions = { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
 type NotifyLevel = "info" | "warning" | "error";
+type CapturedLog = { level: "debug" | "info" | "warn" | "error"; message: string; data: Record<string, unknown> };
 
 interface FakePi {
 	pi: ExtensionApi;
@@ -171,6 +173,24 @@ function resultText(result: { content: Array<{ type: "text"; text: string }> }):
 	return first.text;
 }
 
+function createCapturingLogger(logs: CapturedLog[]): GoalLogger {
+	const capture =
+		(level: CapturedLog["level"]) =>
+		(data: Record<string, unknown>, message?: string): void => {
+			logs.push({ level, message: message ?? "", data });
+		};
+	return {
+		debug: capture("debug"),
+		info: capture("info"),
+		warn: capture("warn"),
+		error: capture("error"),
+	} as GoalLogger;
+}
+
+function messagesFor(logs: CapturedLog[], message: string): CapturedLog[] {
+	return logs.filter((log) => log.message === message);
+}
+
 function firstSentMessage(fake: FakePi): FakePi["sentMessages"][number] {
 	const sent = fake.sentMessages[0];
 	assert.ok(sent);
@@ -292,6 +312,21 @@ test("user command auto-submits the objective after persisting a new goal", asyn
 	assert.deepEqual(fake.operations.slice(0, 2), ["append:pi-goal-state", "sendUserMessage"]);
 });
 
+test("user command traces persisted goal and objective auto-submit", async () => {
+	const logs: CapturedLog[] = [];
+	const fake = createFakePi();
+	createGoalExtension({ logger: createCapturingLogger(logs) }).register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+
+	await goalCommand.handler("Trace this --budget 100", fake.ctx);
+
+	assert.equal(messagesFor(logs, "pi-goal state changed").length, 1);
+	assert.equal(messagesFor(logs, "pi-goal auto-submitting created objective").length, 1);
+	assert.equal(messagesFor(logs, "pi-goal auto-submitting created objective")[0]?.data.delivery, "immediate");
+	assert.equal(messagesFor(logs, "pi-goal auto-submitting created objective")[0]?.data.objectiveLength, "Trace this".length);
+});
+
 test("user command queues the auto-submitted objective when the agent is busy", async () => {
 	const fake = createFakePi();
 	fake.setIdle(false);
@@ -347,6 +382,7 @@ test("continuation prompt escapes objective and requires audit", () => {
 		timeUsedSeconds: 7,
 	});
 	assert.match(prompt, /&lt;do&gt;&amp;verify/);
+	assert.match(prompt, /not a new human\/user message/);
 	assert.match(prompt, /completion audit/);
 	assert.match(prompt, /Tokens remaining: 75/);
 	assert.match(prompt, /call update_goal with status "complete"/);
@@ -371,6 +407,41 @@ test("continuation scheduling sends hidden trigger-turn message after deferral",
 	assert.equal(firstSentMessage(fake).message.customType, CONTINUATION_MESSAGE_TYPE);
 	assert.equal(firstSentMessage(fake).message.display, false);
 	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true });
+});
+
+test("continuation scheduling traces schedule and hidden trigger send", () => {
+	const logs: CapturedLog[] = [];
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn), logger: createCapturingLogger(logs) });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Trace continuation", 1000));
+
+	assert.equal(extension.scheduleContinuation(fake.pi), true);
+	const runScheduled = scheduled.shift();
+	assert.ok(runScheduled);
+	runScheduled();
+
+	assert.equal(messagesFor(logs, "pi-goal continuation scheduled").length, 1);
+	assert.equal(messagesFor(logs, "pi-goal sending hidden continuation trigger").length, 1);
+	assert.equal(messagesFor(logs, "pi-goal sending hidden continuation trigger")[0]?.data.continuationCount, 1);
+	assert.equal(firstSentMessage(fake).message.display, false);
+	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true });
+});
+
+test("continuation suppression decision is traced with reason", async () => {
+	const logs: CapturedLog[] = [];
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn), logger: createCapturingLogger(logs) });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Trace plan mode", 1000));
+
+	await fake.emit("before_agent_start", { prompt: "[PLAN MODE ACTIVE] inspect only" });
+
+	assert.equal(extension.scheduleContinuation(fake.pi), false);
+	assert.equal(messagesFor(logs, "pi-goal continuation not scheduled")[0]?.data.reason, "plan_mode");
+	assert.equal(scheduled.length, 0);
 });
 
 test("continuation scheduling is idempotent while a continuation is pending", () => {

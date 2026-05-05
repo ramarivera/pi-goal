@@ -1,5 +1,6 @@
 .context/
 node_modules/
+.claude/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

@@ -50,3 +50,35 @@ When developing from this repository with the global package installed, use the 
 ```
 
 See `docs/pi-goal-extension.md` for behavior and test details.
+
+## Skill
+
+This package also ships a `goal` skill under `skills/goal/SKILL.md` that helps Pi recognize when a persisted-goal workflow is appropriate and guides users toward effective objective writing, budget control, and completion auditing.
+
+The skill covers:
+- When to use `/goal` vs regular chat
+- How to write specific, verifiable objectives
+- Understanding the completion audit
+- Budget guidance and lifecycle behavior
+- Examples: migration campaigns, test coverage, lint sweeps
+
+## Tracing
+
+`pi-goal` writes structured Pino JSON logs for goal state changes, `/goal` commands, model tools, lifecycle hooks, hidden continuation scheduling, context pruning, token accounting, and suppression decisions.
+
+Default log file:
+
+```text
+~/.pi/logs/pi-goal.log
+```
+
+Environment variables:
+
+```text
+PI_GOAL_LOG_LEVEL=debug
+PI_GOAL_LOG_FILE=/tmp/pi-goal.log
+PI_GOAL_LOG_FILE=stdout
+PI_GOAL_LOG=0
+```
+
+Logs intentionally include goal ids, statuses, counters, usage, and scheduling reasons, but not full continuation prompts or objective text.

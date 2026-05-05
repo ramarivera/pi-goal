@@ -16,6 +16,11 @@
       "name": "opencode",
       "type": "git",
       "url": "https://github.com/sst/opencode.git"
+    },
+    {
+      "name": "pi-btw",
+      "type": "git",
+      "url": "https://github.com/dbachelder/pi-btw.git"
     }
   ]
 }
