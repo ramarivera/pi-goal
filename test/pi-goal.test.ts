@@ -56,6 +56,7 @@ interface FakePi {
 	}>;
 	notifications: Array<{ message: string; level: "info" | "warning" | "error" }>;
 	statuses: Map<string, string | undefined>;
+	overlays: Array<{ component: { render(width: number): string[]; handleInput?(data: string): void }; options: unknown }>;
 	operations: string[];
 	setIdle(idle: boolean): void;
 	emit(event: string, payload: Record<string, unknown>): Promise<unknown[]>;
@@ -70,6 +71,7 @@ function createFakePi(): FakePi {
 	const sentMessages: FakePi["sentMessages"] = [];
 	const notifications: FakePi["notifications"] = [];
 	const statuses = new Map<string, string | undefined>();
+	const overlays: FakePi["overlays"] = [];
 	const branchEntries: SessionEntry[] = [];
 	const operations: string[] = [];
 	let idle = true;
@@ -136,7 +138,25 @@ function createFakePi(): FakePi {
 				statuses.set(key, text);
 				operations.push(`status:${key}`);
 			},
+			async custom(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: () => void) => { render(width: number): string[]; handleInput?(data: string): void }, options?: unknown) {
+				let closed = false;
+				const theme = {
+					fg(_color: string, text: string) {
+						return text;
+					},
+					bold(text: string) {
+						return text;
+					},
+				};
+				const component = factory({}, theme, {}, () => {
+					closed = true;
+				});
+				overlays.push({ component, options });
+				operations.push("custom");
+				if (!closed) component.handleInput?.("\u001b");
+			},
 		},
+		hasUI: true,
 		isIdle() {
 			return idle;
 		},
@@ -154,6 +174,7 @@ function createFakePi(): FakePi {
 		sentMessages,
 		notifications,
 		statuses,
+		overlays,
 		operations,
 		setIdle(nextIdle) {
 			idle = nextIdle;
@@ -300,10 +321,37 @@ test("user command persists create, pause, resume, clear transitions", async () 
 	assert.equal(latestGoal(fake).status, "active");
 
 	await goalCommand.handler("status", fake.ctx);
-	assert.match(fake.notifications.at(-1)?.message ?? "", /Tokens remaining/);
+	assert.equal(fake.notifications.at(-1)?.message, "Goal resumed.");
+	assert.equal(fake.overlays.length, 1);
+	assert.deepEqual(fake.overlays.at(-1)?.options, {
+		overlay: true,
+		overlayOptions: {
+			width: "76%",
+			minWidth: 58,
+			maxHeight: "80%",
+			anchor: "top-center",
+			margin: { top: 1, left: 2, right: 2 },
+		},
+	});
+	assert.match(fake.overlays.at(-1)?.component.render(78).join("\n") ?? "", /Tokens/);
+	assert.match(fake.overlays.at(-1)?.component.render(78).join("\n") ?? "", /Budget/);
 
 	await goalCommand.handler("clear", fake.ctx);
 	assert.equal(latestGoal(fake).status, "cleared");
+});
+
+test("user command falls back to text status notification without interactive UI", async () => {
+	const fake = createFakePi();
+	(fake.ctx as { hasUI: boolean }).hasUI = false;
+	createGoalExtension().register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+
+	await goalCommand.handler("Implement loop --budget 100", fake.ctx);
+	await goalCommand.handler("status", fake.ctx);
+
+	assert.equal(fake.overlays.length, 0);
+	assert.match(fake.notifications.at(-1)?.message ?? "", /Tokens remaining/);
 });
 
 test("user command auto-submits the objective after persisting a new goal", async () => {
@@ -328,10 +376,10 @@ test("user command keeps create notification compact and mirrors goal state in f
 	await goalCommand.handler("Implement loop --budget 100", fake.ctx);
 
 	assert.deepEqual(fake.notifications.at(-1), { message: "Goal created: Implement loop", level: "info" });
-	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • $0.000000");
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • $0");
 
 	await goalCommand.handler("pause", fake.ctx);
-	assert.equal(fake.statuses.get("pi-goal"), "🎯 paused • 0 turns • 0/100 tokens • $0.000000");
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 paused • 0 turns • 0/100 tokens • $0");
 
 	await goalCommand.handler("clear", fake.ctx);
 	assert.equal(fake.statuses.get("pi-goal"), undefined);
@@ -557,7 +605,7 @@ test("turn accounting tracks detailed usage, costs, turns, and model breakdowns"
 	assert.match(status, /Tokens used: 1,950 total/);
 	assert.match(status, /input: 1,000/);
 	assert.match(status, /cache read: 700/);
-	assert.match(status, /Cost: \$0\.037000/);
+	assert.match(status, /Cost: \$0\.037/);
 	assert.match(status, /openai-codex\/gpt-5\.4-mini: 1,950 total/);
 });
 

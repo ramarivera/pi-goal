@@ -53,7 +53,7 @@ The extension registers three model tools:
 
 Pause, resume, clear, and budget-limited transitions stay user/system controlled.
 
-Goal status includes readable elapsed time, active-goal turn count, hidden continuation instruction count, input/output/reasoning/cache token breakdowns, cost totals, and per-model usage rollups when the provider exposes those fields.
+In interactive Pi sessions, `/goal status` opens a compact overlay instead of writing the full report into chat. It includes readable elapsed time, active-goal turn count, hidden continuation instruction count, input/output/reasoning/cache token breakdowns, cost totals, budget remaining, and per-model usage rollups when the provider exposes those fields. In non-interactive modes, the command keeps the same plain text notification fallback.
 
 ## Continuation Behavior
 

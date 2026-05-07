@@ -38,6 +38,8 @@ To avoid collisions when the published package is also installed globally, the p
 
 Creating a goal also submits the objective as the next user message after the goal state is persisted, so the agent starts working on it immediately.
 
+In interactive Pi sessions, `/goal status` opens a compact overlay with the objective, lifecycle status, usage, budget, elapsed time, and model breakdown. In non-interactive modes it falls back to the plain text status notification.
+
 When developing from this repository with the global package installed, use the local command names:
 
 ```text

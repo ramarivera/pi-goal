@@ -7,6 +7,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	InputEvent,
+	Theme,
 	ToolDefinition,
 	TurnEndEvent as PiTurnEndEvent,
 	TurnStartEvent,
@@ -332,7 +333,8 @@ function formatInteger(value: number): string {
 }
 
 function formatCost(value: number): string {
-	return `$${value.toFixed(6)}`;
+	const digits = value >= 1 ? 2 : value >= 0.01 ? 4 : 6;
+	return `$${value.toFixed(digits).replace(/\.?0+$/, "")}`;
 }
 
 function formatDuration(seconds: number): string {
@@ -357,6 +359,53 @@ function formatUsageLine(usage: GoalUsage): string {
 		`cache read: ${formatInteger(usage.cacheRead)}`,
 		`cache write: ${formatInteger(usage.cacheWrite)}`,
 	].join(", ");
+}
+
+function stripAnsi(value: string): string {
+	return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function visibleLength(value: string): number {
+	return stripAnsi(value).length;
+}
+
+function padVisible(value: string, width: number): string {
+	return value + " ".repeat(Math.max(0, width - visibleLength(value)));
+}
+
+function truncateVisible(value: string, width: number): string {
+	const plain = stripAnsi(value);
+	if (plain.length <= width) return value;
+	if (width <= 1) return "…".slice(0, width);
+	return `${plain.slice(0, width - 1)}…`;
+}
+
+function wrapPlain(value: string, width: number): string[] {
+	const words = value.trim().split(/\s+/).filter(Boolean);
+	if (words.length === 0) return [""];
+	const lines: string[] = [];
+	let current = "";
+	for (const word of words) {
+		if (word.length > width) {
+			if (current) {
+				lines.push(current);
+				current = "";
+			}
+			for (let index = 0; index < word.length; index += width) {
+				lines.push(word.slice(index, index + width));
+			}
+			continue;
+		}
+		const next = current ? `${current} ${word}` : word;
+		if (next.length > width) {
+			lines.push(current);
+			current = word;
+		} else {
+			current = next;
+		}
+	}
+	if (current) lines.push(current);
+	return lines;
 }
 
 function formatGoalStatus(goal: GoalState | undefined): string {
@@ -399,6 +448,127 @@ function formatGoalFooterStatus(goal: GoalState | undefined): string | undefined
 
 function syncGoalFooterStatus(ctx: { ui: Pick<ExtensionCommandContext["ui"], "setStatus"> }, goal: GoalState | undefined): void {
 	ctx.ui.setStatus(GOAL_STATUS_KEY, formatGoalFooterStatus(goal));
+}
+
+class GoalStatusOverlay {
+	constructor(
+		private readonly goal: GoalState | undefined,
+		private readonly theme: Theme,
+		private readonly done: () => void,
+	) {}
+
+	handleInput(data: string): void {
+		if (data === "\r" || data === "\n" || data === "\u001b" || data === "\u0003") {
+			this.done();
+		}
+	}
+
+	render(width: number): string[] {
+		const panelWidth = Math.max(52, Math.min(92, width));
+		const innerWidth = panelWidth - 2;
+		const contentWidth = innerWidth - 2;
+		const normalized = this.goal ? normalizeGoal(this.goal) : undefined;
+		const border = (value: string) => this.theme.fg("border", value);
+		const title = this.theme.fg("accent", this.theme.bold("Goal status"));
+		const closeHint = this.theme.fg("dim", "Enter/Esc closes");
+		const lines: string[] = [];
+		const row = (content = "") => border("│") + ` ${padVisible(truncateVisible(content, contentWidth), contentWidth)} ` + border("│");
+		const divider = () => row(this.theme.fg("dim", "─".repeat(contentWidth)));
+		const label = (value: string) => this.theme.fg("muted", value);
+		const value = (text: string) => this.theme.fg("text", text);
+
+		lines.push(border(`╭${"─".repeat(innerWidth)}╮`));
+		lines.push(row(`${title}${" ".repeat(Math.max(1, contentWidth - visibleLength(title) - visibleLength(closeHint)))}${closeHint}`));
+		lines.push(divider());
+
+		if (!normalized) {
+			lines.push(row(this.theme.fg("dim", "No active goal.")));
+			lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
+			return lines;
+		}
+
+		const statusColor = normalized.status === "active" ? "success" : normalized.status === "paused" ? "warning" : "muted";
+		const objectiveLines = wrapPlain(normalized.objective, contentWidth - 2);
+		lines.push(row(`${label("Objective")} ${value(objectiveLines[0] ?? "")}`));
+		for (const continuation of objectiveLines.slice(1, 4)) {
+			lines.push(row(`          ${value(continuation)}`));
+		}
+		if (objectiveLines.length > 4) {
+			lines.push(row(`          ${this.theme.fg("dim", "…")}`));
+		}
+		lines.push(row(""));
+
+		const statPairs = [
+			["Status", this.theme.fg(statusColor, normalized.status)],
+			["Turns", formatInteger(normalized.turnCount)],
+			["Instructions", formatInteger(normalized.continuationCount)],
+			["Tokens", formatInteger(normalized.tokensUsed)],
+			["Cost", formatCost(normalized.usage.cost.total)],
+			["Time", formatDuration(normalized.timeUsedSeconds)],
+		] as const;
+		const leftWidth = Math.floor((contentWidth - 3) / 2);
+		const rightWidth = contentWidth - 3 - leftWidth;
+		for (let index = 0; index < statPairs.length; index += 2) {
+			const left = this.renderStat(statPairs[index]![0], statPairs[index]![1], leftWidth);
+			const rightPair = statPairs[index + 1];
+			const right = rightPair ? this.renderStat(rightPair[0], rightPair[1], rightWidth) : "";
+			lines.push(row(`${left} ${this.theme.fg("border", "│")} ${right}`));
+		}
+
+		if (normalized.tokenBudget !== undefined || normalized.continuationSuppressed) {
+			lines.push(divider());
+			if (normalized.tokenBudget !== undefined) {
+				lines.push(
+					row(
+						`${label("Budget")} ${value(`${formatInteger(Math.max(0, normalized.tokenBudget - normalized.tokensUsed))} remaining of ${formatInteger(normalized.tokenBudget)}`)}`,
+					),
+				);
+			}
+			if (normalized.continuationSuppressed) {
+				lines.push(row(`${label("Continuation")} ${this.theme.fg("warning", "suppressed until user input or resume")}`));
+			}
+		}
+
+		if (Object.keys(normalized.usageByModel).length > 0) {
+			lines.push(divider());
+			lines.push(row(label("Models")));
+			for (const [model, usage] of Object.entries(normalized.usageByModel).sort(([left], [right]) => left.localeCompare(right)).slice(0, 4)) {
+				const usageText = `${model}: ${formatUsageLine(usage)}, cost: ${formatCost(usage.cost.total)}`;
+				for (const usageLine of wrapPlain(usageText, contentWidth - 2).slice(0, 3)) {
+					lines.push(row(`  ${value(usageLine)}`));
+				}
+			}
+		}
+
+		lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
+		return lines;
+	}
+
+	invalidate(): void {}
+	dispose(): void {}
+
+	private renderStat(labelText: string, statValue: string, width: number): string {
+		const prefix = this.theme.fg("muted", `${labelText}: `);
+		const available = Math.max(0, width - visibleLength(prefix));
+		return padVisible(`${prefix}${truncateVisible(statValue, available)}`, width);
+	}
+}
+
+async function showGoalStatus(ctx: ExtensionCommandContext, goal: GoalState | undefined): Promise<void> {
+	if (!ctx.hasUI) {
+		ctx.ui.notify(formatGoalStatus(goal), "info");
+		return;
+	}
+	await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => new GoalStatusOverlay(goal, theme, () => done()), {
+		overlay: true,
+		overlayOptions: {
+			width: "76%",
+			minWidth: 58,
+			maxHeight: "80%",
+			anchor: "top-center",
+			margin: { top: 1, left: 2, right: 2 },
+		},
+	});
 }
 
 function renderContinuationPrompt(goal: GoalState): string {
@@ -648,7 +818,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 						"pi-goal command received",
 					);
 					if (parsed.action === "status") {
-						ctx.ui.notify(formatGoalStatus(currentGoal), "info");
+						await showGoalStatus(ctx, currentGoal);
 						return;
 					}
 					if (parsed.action === "create") {
