@@ -1,8 +1,0 @@
-#!/usr/bin/env sh
-# Chain existing Beads prepare-commit-msg hook after Entire.
-# Cross-reference: .beads/hooks/prepare-commit-msg.pre-entire
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-hook="$repo_root/.beads/hooks/prepare-commit-msg.pre-entire"
-if [ -x "$hook" ]; then
-  "$hook" "$@"
-fi

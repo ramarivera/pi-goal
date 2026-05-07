@@ -1,3 +1,0 @@
-#!/usr/bin/env sh
-# Cross-reference: .entire/settings.json
-entire hooks git commit-msg "$1" || exit 1

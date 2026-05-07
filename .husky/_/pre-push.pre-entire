@@ -1,8 +1,0 @@
-#!/usr/bin/env sh
-# Chain existing Beads pre-push hook after Entire.
-# Cross-reference: .beads/hooks/pre-push.pre-entire
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-hook="$repo_root/.beads/hooks/pre-push.pre-entire"
-if [ -x "$hook" ]; then
-  "$hook" "$@"
-fi
