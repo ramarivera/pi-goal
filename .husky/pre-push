@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Cross-reference: .entire/settings.json
+entire hooks git pre-push "$1" || true

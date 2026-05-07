@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Cross-reference: .entire/settings.json
+entire hooks git post-rewrite "$1" 2>/dev/null || true
