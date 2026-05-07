@@ -55,6 +55,7 @@ interface FakePi {
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
 	}>;
 	notifications: Array<{ message: string; level: "info" | "warning" | "error" }>;
+	statuses: Map<string, string | undefined>;
 	operations: string[];
 	setIdle(idle: boolean): void;
 	emit(event: string, payload: Record<string, unknown>): Promise<unknown[]>;
@@ -68,6 +69,7 @@ function createFakePi(): FakePi {
 	const sentUserMessages: FakePi["sentUserMessages"] = [];
 	const sentMessages: FakePi["sentMessages"] = [];
 	const notifications: FakePi["notifications"] = [];
+	const statuses = new Map<string, string | undefined>();
 	const branchEntries: SessionEntry[] = [];
 	const operations: string[] = [];
 	let idle = true;
@@ -130,6 +132,10 @@ function createFakePi(): FakePi {
 				notifications.push({ message, level });
 				operations.push("notify");
 			},
+			setStatus(key: string, text: string | undefined) {
+				statuses.set(key, text);
+				operations.push(`status:${key}`);
+			},
 		},
 		isIdle() {
 			return idle;
@@ -147,6 +153,7 @@ function createFakePi(): FakePi {
 		sentUserMessages,
 		sentMessages,
 		notifications,
+		statuses,
 		operations,
 		setIdle(nextIdle) {
 			idle = nextIdle;
@@ -309,7 +316,25 @@ test("user command auto-submits the objective after persisting a new goal", asyn
 
 	assert.equal(latestGoal(fake).objective, "Implement loop");
 	assert.deepEqual(fake.sentUserMessages, [{ content: "Implement loop" }]);
-	assert.deepEqual(fake.operations.slice(0, 2), ["append:pi-goal-state", "sendUserMessage"]);
+	assert.ok(fake.operations.indexOf("append:pi-goal-state") < fake.operations.indexOf("sendUserMessage"));
+});
+
+test("user command keeps create notification compact and mirrors goal state in footer status", async () => {
+	const fake = createFakePi();
+	createGoalExtension().register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+
+	await goalCommand.handler("Implement loop --budget 100", fake.ctx);
+
+	assert.deepEqual(fake.notifications.at(-1), { message: "Goal created: Implement loop", level: "info" });
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • $0.000000");
+
+	await goalCommand.handler("pause", fake.ctx);
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 paused • 0 turns • 0/100 tokens • $0.000000");
+
+	await goalCommand.handler("clear", fake.ctx);
+	assert.equal(fake.statuses.get("pi-goal"), undefined);
 });
 
 test("user command traces persisted goal and objective auto-submit", async () => {

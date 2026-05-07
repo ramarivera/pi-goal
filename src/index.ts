@@ -142,6 +142,7 @@ const UPDATE_GOAL_SCHEMA = Type.Object(
 	{ additionalProperties: false },
 );
 
+const GOAL_STATUS_KEY = "pi-goal";
 const TERMINAL_STATUSES = new Set<GoalStatus>(["complete", "budget_limited", "cleared"]);
 const DISABLED_LOGGER = pino({ enabled: false });
 
@@ -384,6 +385,20 @@ function formatGoalStatus(goal: GoalState | undefined): string {
 		lines.push("Continuation: suppressed until user input or resume");
 	}
 	return lines.join("\n");
+}
+
+function formatGoalFooterStatus(goal: GoalState | undefined): string | undefined {
+	if (!goal || goal.status === "complete" || goal.status === "cleared") return undefined;
+	const normalized = normalizeGoal(goal);
+	const usage =
+		normalized.tokenBudget === undefined
+			? `${formatInteger(normalized.tokensUsed)} tokens`
+			: `${formatInteger(normalized.tokensUsed)}/${formatInteger(normalized.tokenBudget)} tokens`;
+	return [`🎯 ${normalized.status}`, `${formatInteger(normalized.turnCount)} turns`, usage, formatCost(normalized.usage.cost.total)].join(" • ");
+}
+
+function syncGoalFooterStatus(ctx: { ui: Pick<ExtensionCommandContext["ui"], "setStatus"> }, goal: GoalState | undefined): void {
+	ctx.ui.setStatus(GOAL_STATUS_KEY, formatGoalFooterStatus(goal));
 }
 
 function renderContinuationPrompt(goal: GoalState): string {
@@ -642,24 +657,28 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 							ctx.ui.notify("A goal already exists. Complete, pause, clear, or resume it before creating another.", "warning");
 							return;
 						}
-						setGoal(pi, createGoal(parsed.objective, parsed.tokenBudget));
+						const createdGoal = setGoal(pi, createGoal(parsed.objective, parsed.tokenBudget));
+						syncGoalFooterStatus(ctx, createdGoal);
 						submitGoalObjective(pi, ctx, parsed.objective, logger);
-						ctx.ui.notify(`Goal created:\n${formatGoalStatus(currentGoal)}`, "info");
+						ctx.ui.notify(`Goal created: ${createdGoal.objective}`, "info");
 						return;
 					}
 					if (parsed.action === "pause") {
 						setGoal(pi, transitionGoal(currentGoal, "paused"));
+						syncGoalFooterStatus(ctx, currentGoal);
 						ctx.ui.notify("Goal paused.", "info");
 						return;
 					}
 					if (parsed.action === "resume") {
 						setGoal(pi, transitionGoal(currentGoal, "active"));
+						syncGoalFooterStatus(ctx, currentGoal);
 						ctx.ui.notify("Goal resumed.", "info");
 						return;
 					}
 					if (parsed.action === "clear") {
 						setGoal(pi, transitionGoal(currentGoal, "cleared"));
 						currentGoal = undefined;
+						syncGoalFooterStatus(ctx, currentGoal);
 						logger.info({ goalPresent: false }, "pi-goal cleared active state");
 						ctx.ui.notify("Goal cleared.", "info");
 					}
@@ -729,6 +748,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 
 		pi.on("session_start", (_event, ctx) => {
 			currentGoal = readLatestGoalFromBranch(ctx.sessionManager?.getEntries?.() ?? ctx.sessionManager?.getBranch?.());
+			syncGoalFooterStatus(ctx, currentGoal);
 			logger.info(goalLogFields(currentGoal), "pi-goal session state restored");
 		});
 
@@ -780,7 +800,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			}
 		});
 
-		pi.on("turn_end", (event) => {
+		pi.on("turn_end", (event, ctx) => {
 			const goalTurnEnd = event as unknown as TurnEndEvent;
 			if (!currentGoal?.status || currentGoal.status !== "active") return;
 			const endedAt = clock();
@@ -806,6 +826,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 				"pi-goal turn ended",
 			);
 			markBudgetLimitedIfNeeded(pi);
+			syncGoalFooterStatus(ctx, currentGoal);
 		});
 
 		pi.on("agent_end", () => {
