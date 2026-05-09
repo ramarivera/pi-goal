@@ -12,7 +12,7 @@ import {
 	type AgentSession,
 	type CustomEntry,
 	type SessionEntry,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 const liveModelPattern = process.env.PI_GOAL_LIVE_MODEL;
 const judgeModelPattern = process.env.PI_GOAL_JUDGE_MODEL;

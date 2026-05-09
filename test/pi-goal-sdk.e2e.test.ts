@@ -10,7 +10,7 @@ import {
 	type CustomEntry,
 	type ExtensionContext,
 	type SessionEntry,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 const repoRoot = process.cwd();
 let agentDir: string;

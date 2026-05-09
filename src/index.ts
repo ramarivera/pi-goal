@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { Type } from "@mariozechner/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import type {
 	ContextEvent,
 	ExtensionAPI,
@@ -11,7 +11,7 @@ import type {
 	ToolDefinition,
 	TurnEndEvent as PiTurnEndEvent,
 	TurnStartEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import pino, { type Logger } from "pino";
 
 type GoalStatus = "active" | "paused" | "budget_limited" | "complete" | "cleared";
