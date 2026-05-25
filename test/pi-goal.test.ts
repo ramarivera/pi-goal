@@ -376,10 +376,10 @@ test("user command keeps create notification compact and mirrors goal state in f
 	await goalCommand.handler("Implement loop --budget 100", fake.ctx);
 
 	assert.deepEqual(fake.notifications.at(-1), { message: "Goal created: Implement loop", level: "info" });
-	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • $0");
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • 0s • $0");
 
 	await goalCommand.handler("pause", fake.ctx);
-	assert.equal(fake.statuses.get("pi-goal"), "🎯 paused • 0 turns • 0/100 tokens • $0");
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 paused • 0 turns • 0/100 tokens • 0s • $0");
 
 	await goalCommand.handler("clear", fake.ctx);
 	assert.equal(fake.statuses.get("pi-goal"), undefined);

@@ -337,7 +337,7 @@ function formatCost(value: number): string {
 	return `$${value.toFixed(digits).replace(/\.?0+$/, "")}`;
 }
 
-function formatDuration(seconds: number): string {
+function formatDuration(seconds: number, compact = false): string {
 	const wholeSeconds = Math.max(0, Math.floor(seconds));
 	const hours = Math.floor(wholeSeconds / 3600);
 	const minutes = Math.floor((wholeSeconds % 3600) / 60);
@@ -346,8 +346,9 @@ function formatDuration(seconds: number): string {
 	if (hours > 0) parts.push(`${hours}h`);
 	if (minutes > 0) parts.push(`${minutes}m`);
 	if (remainingSeconds > 0 || parts.length === 0) parts.push(`${remainingSeconds}s`);
-	const compact = parts.join(" ");
-	return wholeSeconds >= 60 ? `${compact} (${formatInteger(wholeSeconds)} seconds)` : compact;
+	const compactStr = parts.join(" ");
+	if (compact) return compactStr;
+	return wholeSeconds >= 60 ? `${compactStr} (${formatInteger(wholeSeconds)} seconds)` : compactStr;
 }
 
 function formatUsageLine(usage: GoalUsage): string {
@@ -443,7 +444,7 @@ function formatGoalFooterStatus(goal: GoalState | undefined): string | undefined
 		normalized.tokenBudget === undefined
 			? `${formatInteger(normalized.tokensUsed)} tokens`
 			: `${formatInteger(normalized.tokensUsed)}/${formatInteger(normalized.tokenBudget)} tokens`;
-	return [`🎯 ${normalized.status}`, `${formatInteger(normalized.turnCount)} turns`, usage, formatCost(normalized.usage.cost.total)].join(" • ");
+	return [`🎯 ${normalized.status}`, `${formatInteger(normalized.turnCount)} turns`, usage, formatDuration(normalized.timeUsedSeconds, true), formatCost(normalized.usage.cost.total)].join(" • ");
 }
 
 function syncGoalFooterStatus(ctx: { ui: Pick<ExtensionCommandContext["ui"], "setStatus"> }, goal: GoalState | undefined): void {
