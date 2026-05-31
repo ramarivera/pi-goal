@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const repoRoot = process.cwd();
+process.env.PI_GOAL_CONTINUATION_DELAY_MS ??= "0";
 let agentDir: string;
 
 interface PersistedGoalState {
@@ -48,6 +49,21 @@ function latestGoal(entries: SessionEntry[]): PersistedGoalState {
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForContinuation(entries: () => SessionEntry[], timeoutMs = 5_000): Promise<PersistedGoalState> {
+	const deadline = Date.now() + timeoutMs;
+	let goal = latestGoal(entries());
+	while (Date.now() < deadline) {
+		goal = latestGoal(entries());
+		if ((goal.continuationCount ?? 0) >= 1 && goal.continuationScheduled === false) {
+			return goal;
+		}
+		await delay(50);
+	}
+	assert.equal(goal.continuationScheduled, false);
+	assert.ok((goal.continuationCount ?? 0) >= 1, "expected hidden continuation pressure to fire");
+	return goal;
 }
 
 test("Pi SDK discovers the project-local pi-goal extension", async () => {
@@ -137,9 +153,8 @@ test("Pi SDK /local-goal resume re-pressurizes an active incomplete goal", async
 		await session.bindExtensions({});
 		await session.prompt("/local-goal Resume pressure e2e --budget 123");
 		await session.prompt("/local-goal resume");
-		await delay(500);
 
-		const goal = latestGoal(session.sessionManager.getEntries());
+		const goal = await waitForContinuation(() => session.sessionManager.getEntries());
 		assert.equal(goal.objective, "Resume pressure e2e");
 		assert.equal(goal.status, "active");
 		assert.ok((goal.continuationCount ?? 0) >= 1, "expected /local-goal resume to send continuation pressure");
@@ -185,9 +200,8 @@ test("Pi SDK automatically re-pressurizes active goals after assistant error mes
 				timestamp: Date.now(),
 			},
 		});
-		await delay(500);
 
-		const goal = latestGoal(session.sessionManager.getEntries());
+		const goal = await waitForContinuation(() => session.sessionManager.getEntries());
 		assert.equal(goal.objective, "Automatic error pressure e2e");
 		assert.equal(goal.status, "active");
 		assert.ok((goal.continuationCount ?? 0) >= 1, "expected assistant error to send continuation pressure automatically");

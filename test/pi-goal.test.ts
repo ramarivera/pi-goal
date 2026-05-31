@@ -479,7 +479,7 @@ test("continuation scheduling sends hidden trigger-turn message after deferral",
 	assert.equal(fake.sentMessages.length, 1);
 	assert.equal(firstSentMessage(fake).message.customType, CONTINUATION_MESSAGE_TYPE);
 	assert.equal(firstSentMessage(fake).message.display, false);
-	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true });
+	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true, deliverAs: "followUp" });
 });
 
 test("continuation scheduling queues follow-up pressure when the agent is still busy", () => {
@@ -490,7 +490,7 @@ test("continuation scheduling queues follow-up pressure when the agent is still 
 	extension.register(fake.pi);
 	extension.setGoalForTest(createGoal("Recover after provider error", 1000));
 
-	const scheduledNow = (extension.scheduleContinuation as (pi: ExtensionApi, ctx?: ExtensionCommandContext) => boolean)(fake.pi, fake.ctx);
+	const scheduledNow = extension.scheduleContinuation(fake.pi);
 	assert.equal(scheduledNow, true);
 
 	const runScheduled = scheduled.shift();
@@ -520,7 +520,7 @@ test("continuation scheduling traces schedule and hidden trigger send", () => {
 	assert.equal(messagesFor(logs, "pi-goal sending hidden continuation trigger").length, 1);
 	assert.equal(messagesFor(logs, "pi-goal sending hidden continuation trigger")[0]?.data.continuationCount, 1);
 	assert.equal(firstSentMessage(fake).message.display, false);
-	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true });
+	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true, deliverAs: "followUp" });
 });
 
 test("continuation suppression decision is traced with reason", async () => {
@@ -705,7 +705,7 @@ test("recoverable errors during no-tool continuation do not suppress future pres
 	extension.register(fake.pi);
 	extension.setGoalForTest(createGoal("Recover continuation errors", 1000));
 
-	extension.scheduleContinuation(fake.pi, fake.ctx);
+	extension.scheduleContinuation(fake.pi);
 	const runInitialPressure = scheduled.shift();
 	assert.ok(runInitialPressure);
 	runInitialPressure();

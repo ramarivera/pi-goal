@@ -6,7 +6,6 @@ import type {
 	ContextEvent,
 	ExtensionAPI,
 	ExtensionCommandContext,
-	ExtensionContext,
 	InputEvent,
 	Theme,
 	ToolDefinition,
@@ -772,7 +771,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		logger.warn(goalLogFields(currentGoal), "pi-goal budget exhausted");
 	}
 
-	function scheduleContinuation(pi: ExtensionAPI, ctx?: Pick<ExtensionContext, "isIdle">): boolean {
+	function scheduleContinuation(pi: ExtensionAPI): boolean {
 		const reason = continuationBlockReason(currentGoal, { planModeActive });
 		if (reason) {
 			logger.debug({ ...goalLogFields(currentGoal), reason, planModeActive }, "pi-goal continuation not scheduled");
@@ -807,10 +806,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			};
 			const continuationGoal = currentGoal;
 			persist(pi);
-			const sendOptions: { triggerTurn: true; deliverAs?: "followUp" } = { triggerTurn: true };
-			if (ctx && !ctx.isIdle()) {
-				sendOptions.deliverAs = "followUp";
-			}
+			const sendOptions = { triggerTurn: true, deliverAs: "followUp" as const };
 			logger.info({ sendOptions, ...goalLogFields(continuationGoal) }, "pi-goal sending hidden continuation trigger");
 			try {
 				pi.sendMessage(
@@ -873,7 +869,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 					if (parsed.action === "resume") {
 						setGoal(pi, transitionGoal(currentGoal, "active"));
 						syncGoalFooterStatus(ctx, currentGoal);
-						scheduleContinuation(pi, ctx);
+						scheduleContinuation(pi);
 						ctx.ui.notify("Goal resumed.", "info");
 						return;
 					}
@@ -1040,15 +1036,15 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			syncGoalFooterStatus(ctx, currentGoal);
 		});
 
-		pi.on("message_end", (event, ctx) => {
+		pi.on("message_end", (event) => {
 			if (!isRecoverableAssistantError(event.message)) return;
 			logger.warn(goalLogFields(currentGoal), "pi-goal recoverable assistant error observed");
-			scheduleContinuation(pi, ctx);
+			scheduleContinuation(pi);
 		});
 
-		pi.on("agent_end", (_event, ctx) => {
+		pi.on("agent_end", () => {
 			logger.debug(goalLogFields(currentGoal), "pi-goal agent_end observed");
-			scheduleContinuation(pi, ctx);
+			scheduleContinuation(pi);
 		});
 	}
 
