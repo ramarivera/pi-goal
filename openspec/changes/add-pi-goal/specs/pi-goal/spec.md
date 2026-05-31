@@ -41,7 +41,12 @@ The extension SHALL expose user commands for creating, inspecting, pausing, resu
 #### Scenario: Resume paused goal
 
 - **WHEN** the user runs `/goal resume` while a goal is paused
-- **THEN** the extension marks the goal active, persists the state, and allows automatic continuation after the current turn is idle
+- **THEN** the extension marks the goal active, persists the state, and schedules continuation pressure after the current command returns
+
+#### Scenario: Re-pressure active unfinished goal
+
+- **WHEN** the user runs `/goal resume` while a goal is already active and not complete
+- **THEN** the extension clears continuation suppression, persists the state, and schedules hidden continuation pressure for that active goal
 
 #### Scenario: Clear goal
 
@@ -85,6 +90,21 @@ The extension SHALL continue active goals by sending a hidden Pi custom message 
 
 - **WHEN** an agent run ends, the current goal is active, budget remains, and continuation is not suppressed
 - **THEN** the extension schedules a hidden custom message with `display: false` and `triggerTurn: true`
+
+#### Scenario: Queue continuation if agent is still busy
+
+- **WHEN** hidden continuation pressure is sent while the Pi context reports the agent is not idle
+- **THEN** the extension sends the hidden custom message with follow-up delivery so the pressure is queued instead of crashing with an already-processing error
+
+#### Scenario: Automatically pressure after recoverable assistant error
+
+- **WHEN** an assistant turn ends with a recoverable provider/runtime error while the current goal is active and incomplete
+- **THEN** the extension automatically schedules hidden continuation pressure without requiring the user to run `/goal resume`
+
+#### Scenario: Recoverable error does not trigger no-tool suppression
+
+- **WHEN** a hidden continuation turn ends with a recoverable provider/runtime error before any tool execution
+- **THEN** the extension does not treat that error turn as a no-tool stall and does not suppress future continuation pressure
 
 #### Scenario: Defer until agent run settles
 

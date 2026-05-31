@@ -482,6 +482,27 @@ test("continuation scheduling sends hidden trigger-turn message after deferral",
 	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true });
 });
 
+test("continuation scheduling queues follow-up pressure when the agent is still busy", () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	fake.setIdle(false);
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Recover after provider error", 1000));
+
+	const scheduledNow = (extension.scheduleContinuation as (pi: ExtensionApi, ctx?: ExtensionCommandContext) => boolean)(fake.pi, fake.ctx);
+	assert.equal(scheduledNow, true);
+
+	const runScheduled = scheduled.shift();
+	assert.ok(runScheduled);
+	runScheduled();
+
+	assert.equal(fake.sentMessages.length, 1);
+	assert.equal(firstSentMessage(fake).message.customType, CONTINUATION_MESSAGE_TYPE);
+	assert.equal(firstSentMessage(fake).message.display, false);
+	assert.deepEqual(firstSentMessage(fake).options, { triggerTurn: true, deliverAs: "followUp" });
+});
+
 test("continuation scheduling traces schedule and hidden trigger send", () => {
 	const logs: CapturedLog[] = [];
 	const scheduled: Array<() => void> = [];
@@ -648,6 +669,69 @@ test("no-tool continuation suppresses future automatic continuation", async () =
 	assert.equal(shouldScheduleContinuation(latestGoal(fake)), false);
 });
 
+test("recoverable assistant errors automatically schedule active goal continuation pressure", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn), clock: () => 1_000 });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Recover automatically after provider error", 1000));
+
+	await fake.emit("message_end", {
+		message: {
+			role: "assistant",
+			content: [],
+			stopReason: "error",
+			errorMessage: 'Codex error: {"code":"context_length_exceeded"}',
+			usage: { total: 1 },
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			timestamp: 1_000,
+		},
+	});
+
+	assert.equal(latestGoal(fake).continuationScheduled, true);
+	assert.equal(scheduled.length, 1);
+	const runScheduled = scheduled.shift();
+	assert.ok(runScheduled);
+	runScheduled();
+	assert.equal(firstSentMessage(fake).message.customType, CONTINUATION_MESSAGE_TYPE);
+	assert.match(firstSentMessage(fake).message.content, /Recover automatically after provider error/);
+});
+
+test("recoverable errors during no-tool continuation do not suppress future pressure", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn), clock: () => 1_000 });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Recover continuation errors", 1000));
+
+	extension.scheduleContinuation(fake.pi, fake.ctx);
+	const runInitialPressure = scheduled.shift();
+	assert.ok(runInitialPressure);
+	runInitialPressure();
+
+	await fake.emit("turn_start", { turnIndex: 1, timestamp: 1_000 });
+	await fake.emit("turn_end", {
+		turnIndex: 1,
+		message: {
+			role: "assistant",
+			content: [],
+			stopReason: "error",
+			errorMessage: "provider returned error: 503 service unavailable",
+			usage: { total: 1 },
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			timestamp: 1_000,
+		},
+		toolResults: [],
+	});
+	await fake.emit("agent_end", { messages: [] });
+
+	assert.equal(latestGoal(fake).continuationSuppressed, false);
+	assert.equal(latestGoal(fake).continuationScheduled, true);
+	assert.equal(scheduled.length, 1);
+});
+
 test("user input resets no-tool continuation suppression", async () => {
 	const fake = createFakePi();
 	const extension = createGoalExtension({ clock: () => 1_000 });
@@ -666,6 +750,32 @@ test("user input resets no-tool continuation suppression", async () => {
 	assert.equal(current.continuationSuppressed, false);
 	assert.equal(current.lastContinuationHadToolCall, true);
 	assert.equal(shouldScheduleContinuation(current), true);
+});
+
+test("resume command re-pressurizes an active unfinished goal", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+	const goalCommand = fake.commands.get("goal");
+	assert.ok(goalCommand);
+	extension.setGoalForTest({
+		...createGoal("Recover after context overflow", 1000),
+		continuationSuppressed: true,
+		lastContinuationHadToolCall: false,
+	});
+
+	await goalCommand.handler("resume", fake.ctx);
+
+	assert.equal(latestGoal(fake).status, "active");
+	assert.equal(latestGoal(fake).continuationSuppressed, false);
+	assert.equal(latestGoal(fake).continuationScheduled, true);
+	assert.equal(scheduled.length, 1);
+	const runScheduled = scheduled.shift();
+	assert.ok(runScheduled);
+	runScheduled();
+	assert.equal(firstSentMessage(fake).message.customType, CONTINUATION_MESSAGE_TYPE);
+	assert.match(firstSentMessage(fake).message.content, /Recover after context overflow/);
 });
 
 test("plan mode suppresses automatic continuation until a normal prompt arrives", async () => {

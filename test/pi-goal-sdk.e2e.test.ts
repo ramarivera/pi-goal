@@ -21,6 +21,8 @@ interface PersistedGoalState {
 	tokenBudget?: number;
 	tokensUsed: number;
 	timeUsedSeconds: number;
+	continuationCount?: number;
+	continuationScheduled?: boolean;
 }
 
 before(async () => {
@@ -42,6 +44,10 @@ function latestGoal(entries: SessionEntry[]): PersistedGoalState {
 	assert.ok(entry, "expected a persisted pi-goal-state custom entry");
 	assert.ok(entry.data, "expected persisted goal data");
 	return entry.data;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 test("Pi SDK discovers the project-local pi-goal extension", async () => {
@@ -103,6 +109,89 @@ test("Pi SDK executes /local-goal commands through the live project extension ru
 		await session.prompt("/local-goal clear");
 		goal = latestGoal(session.sessionManager.getEntries());
 		assert.equal(goal.status, "cleared");
+	} finally {
+		session.dispose();
+	}
+});
+
+test("Pi SDK /local-goal resume re-pressurizes an active incomplete goal", async () => {
+	const loader = new DefaultResourceLoader({
+		cwd: repoRoot,
+		agentDir,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+	});
+	await loader.reload();
+
+	const { session } = await createAgentSession({
+		cwd: repoRoot,
+		agentDir,
+		resourceLoader: loader,
+		sessionManager: SessionManager.inMemory(repoRoot),
+		noTools: "all",
+	});
+
+	try {
+		await session.bindExtensions({});
+		await session.prompt("/local-goal Resume pressure e2e --budget 123");
+		await session.prompt("/local-goal resume");
+		await delay(500);
+
+		const goal = latestGoal(session.sessionManager.getEntries());
+		assert.equal(goal.objective, "Resume pressure e2e");
+		assert.equal(goal.status, "active");
+		assert.ok((goal.continuationCount ?? 0) >= 1, "expected /local-goal resume to send continuation pressure");
+		assert.equal(goal.continuationScheduled, false);
+	} finally {
+		session.dispose();
+	}
+});
+
+test("Pi SDK automatically re-pressurizes active goals after assistant error messages", async () => {
+	const loader = new DefaultResourceLoader({
+		cwd: repoRoot,
+		agentDir,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+	});
+	await loader.reload();
+
+	const { session } = await createAgentSession({
+		cwd: repoRoot,
+		agentDir,
+		resourceLoader: loader,
+		sessionManager: SessionManager.inMemory(repoRoot),
+		noTools: "all",
+	});
+
+	try {
+		await session.bindExtensions({});
+		await session.prompt("/local-goal Automatic error pressure e2e --budget 123");
+		await session.extensionRunner.emitMessageEnd({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [],
+				api: "responses",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "error",
+				errorMessage: 'Codex error: {"code":"context_length_exceeded"}',
+				timestamp: Date.now(),
+			},
+		});
+		await delay(500);
+
+		const goal = latestGoal(session.sessionManager.getEntries());
+		assert.equal(goal.objective, "Automatic error pressure e2e");
+		assert.equal(goal.status, "active");
+		assert.ok((goal.continuationCount ?? 0) >= 1, "expected assistant error to send continuation pressure automatically");
+		assert.equal(goal.continuationScheduled, false);
 	} finally {
 		session.dispose();
 	}

@@ -6,6 +6,7 @@ import type {
 	ContextEvent,
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 	InputEvent,
 	Theme,
 	ToolDefinition,
@@ -63,7 +64,7 @@ interface ContextMessage {
 	[key: string]: unknown;
 }
 
-type TurnEndEvent = Omit<PiTurnEndEvent, "message"> & { message?: UsageCarrier };
+type TurnEndEvent = Omit<PiTurnEndEvent, "message"> & { message?: UsageCarrier & AssistantErrorCarrier };
 
 interface UsageCarrier {
 	usage?: UsageShape;
@@ -75,6 +76,12 @@ interface UsageCarrier {
 	model?: string;
 	responseModel?: string;
 	[key: string]: unknown;
+}
+
+interface AssistantErrorCarrier {
+	role?: string;
+	stopReason?: string;
+	errorMessage?: string;
 }
 
 interface UsageShape {
@@ -122,6 +129,7 @@ interface GoalExtensionOptions {
 	logger?: GoalLogger;
 	logLevel?: string;
 	logFile?: string | false;
+	continuationDelayMs?: number;
 }
 
 type GoalLogger = Pick<Logger, "debug" | "info" | "warn" | "error">;
@@ -145,6 +153,8 @@ const UPDATE_GOAL_SCHEMA = Type.Object(
 
 const GOAL_STATUS_KEY = "pi-goal";
 const TERMINAL_STATUSES = new Set<GoalStatus>(["complete", "budget_limited", "cleared"]);
+const NON_RECOVERABLE_ERROR_PATTERN =
+	/authentication failed|api key|no api key|credentials may have expired|consent required|unauthori[sz]ed|forbidden|permission denied/i;
 const DISABLED_LOGGER = pino({ enabled: false });
 
 function now(): number {
@@ -679,6 +689,14 @@ function getModelUsageKey(message: UsageCarrier | undefined): string {
 	return `${provider}/${model}`;
 }
 
+function isRecoverableAssistantError(message: unknown): boolean {
+	if (!message || typeof message !== "object") return false;
+	const candidate = message as AssistantErrorCarrier;
+	if (candidate.role !== "assistant" || candidate.stopReason !== "error") return false;
+	const errorMessage = typeof candidate.errorMessage === "string" ? candidate.errorMessage : "";
+	return !NON_RECOVERABLE_ERROR_PATTERN.test(errorMessage);
+}
+
 function shouldScheduleContinuation(goal: GoalState | undefined, options: { planModeActive?: boolean } = {}): boolean {
 	return continuationBlockReason(goal, options) === undefined;
 }
@@ -718,7 +736,8 @@ function submitGoalObjective(pi: ExtensionAPI, ctx: ExtensionCommandContext, obj
 }
 
 function createGoalExtension(options: GoalExtensionOptions = {}) {
-	const scheduler = options.scheduler ?? ((fn: () => void) => setTimeout(fn, 0));
+	const continuationDelayMs = Math.max(0, Number(options.continuationDelayMs ?? process.env.PI_GOAL_CONTINUATION_DELAY_MS ?? 250));
+	const scheduler = options.scheduler ?? ((fn: () => void) => setTimeout(fn, continuationDelayMs));
 	const clock = options.clock ?? now;
 	const commandName = options.commandName ?? "goal";
 	const toolNamePrefix = options.toolNamePrefix ?? "";
@@ -753,7 +772,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		logger.warn(goalLogFields(currentGoal), "pi-goal budget exhausted");
 	}
 
-	function scheduleContinuation(pi: ExtensionAPI): boolean {
+	function scheduleContinuation(pi: ExtensionAPI, ctx?: Pick<ExtensionContext, "isIdle">): boolean {
 		const reason = continuationBlockReason(currentGoal, { planModeActive });
 		if (reason) {
 			logger.debug({ ...goalLogFields(currentGoal), reason, planModeActive }, "pi-goal continuation not scheduled");
@@ -788,16 +807,27 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			};
 			const continuationGoal = currentGoal;
 			persist(pi);
-			logger.info(goalLogFields(continuationGoal), "pi-goal sending hidden continuation trigger");
-			pi.sendMessage(
-				{
-					customType: CONTINUATION_MESSAGE_TYPE,
-					content: renderContinuationPrompt(continuationGoal),
-					display: false,
-					details: { goalId },
-				},
-				{ triggerTurn: true },
-			);
+			const sendOptions: { triggerTurn: true; deliverAs?: "followUp" } = { triggerTurn: true };
+			if (ctx && !ctx.isIdle()) {
+				sendOptions.deliverAs = "followUp";
+			}
+			logger.info({ sendOptions, ...goalLogFields(continuationGoal) }, "pi-goal sending hidden continuation trigger");
+			try {
+				pi.sendMessage(
+					{
+						customType: CONTINUATION_MESSAGE_TYPE,
+						content: renderContinuationPrompt(continuationGoal),
+						display: false,
+						details: { goalId },
+					},
+					sendOptions,
+				);
+			} catch (error) {
+				logger.warn(
+					{ error: error instanceof Error ? error.message : String(error), sendOptions, ...goalLogFields(continuationGoal) },
+					"pi-goal hidden continuation trigger failed synchronously",
+				);
+			}
 		});
 		return true;
 	}
@@ -843,6 +873,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 					if (parsed.action === "resume") {
 						setGoal(pi, transitionGoal(currentGoal, "active"));
 						syncGoalFooterStatus(ctx, currentGoal);
+						scheduleContinuation(pi, ctx);
 						ctx.ui.notify("Goal resumed.", "info");
 						return;
 					}
@@ -976,6 +1007,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			if (!currentGoal?.status || currentGoal.status !== "active") return;
 			const endedAt = clock();
 			const elapsed = activeTurnStartedAt ? Math.max(0, Math.floor((endedAt - activeTurnStartedAt) / 1000)) : 0;
+			const turnEndedWithRecoverableError = isRecoverableAssistantError(goalTurnEnd.message);
 			const usage = extractUsageAccounting(goalTurnEnd.message);
 			const modelKey = getModelUsageKey(goalTurnEnd.message);
 			const usageByModel = { ...currentGoal.usageByModel };
@@ -988,21 +1020,35 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 				turnCount: (currentGoal.turnCount ?? 0) + 1,
 				timeUsedSeconds: currentGoal.timeUsedSeconds + elapsed,
 				lastContinuationHadToolCall: currentTurnHadTool,
-				continuationSuppressed: currentTurnIsContinuation && !currentTurnHadTool,
+				continuationSuppressed: currentTurnIsContinuation && !currentTurnHadTool && !turnEndedWithRecoverableError,
 				updatedAt: endedAt,
 			};
 			persist(pi);
 			logger.info(
-				{ elapsedSeconds: elapsed, modelKey, usage, currentTurnHadTool, currentTurnIsContinuation, ...goalLogFields(currentGoal) },
+				{
+					elapsedSeconds: elapsed,
+					modelKey,
+					usage,
+					currentTurnHadTool,
+					currentTurnIsContinuation,
+					turnEndedWithRecoverableError,
+					...goalLogFields(currentGoal),
+				},
 				"pi-goal turn ended",
 			);
 			markBudgetLimitedIfNeeded(pi);
 			syncGoalFooterStatus(ctx, currentGoal);
 		});
 
-		pi.on("agent_end", () => {
+		pi.on("message_end", (event, ctx) => {
+			if (!isRecoverableAssistantError(event.message)) return;
+			logger.warn(goalLogFields(currentGoal), "pi-goal recoverable assistant error observed");
+			scheduleContinuation(pi, ctx);
+		});
+
+		pi.on("agent_end", (_event, ctx) => {
 			logger.debug(goalLogFields(currentGoal), "pi-goal agent_end observed");
-			scheduleContinuation(pi);
+			scheduleContinuation(pi, ctx);
 		});
 	}
 
@@ -1052,6 +1098,7 @@ export {
 	renderContinuationPrompt,
 	shouldScheduleContinuation,
 	transitionGoal,
+	isRecoverableAssistantError,
 };
 
 export default piGoalExtension;

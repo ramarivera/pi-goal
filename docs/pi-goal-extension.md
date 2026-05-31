@@ -43,6 +43,10 @@ In this repository's project-local extension, use `/local-goal` with the same su
 
 When `/goal <objective>` or `/local-goal <objective>` creates a new goal, the extension first persists the goal state and then submits the objective as a user message. If the agent is idle, the message starts immediately; if a turn is already running, it is queued as a follow-up.
 
+Recoverable provider/runtime errors automatically re-apply pressure while a goal is active and incomplete. This means a long-running goal should not stop just because a transient model/API/runtime error happened while Ramiro is away.
+
+`/goal resume` is still a manual pressure button. If the goal is paused, it marks it active and schedules hidden continuation pressure. If the goal is already active but stalled, `/goal resume` clears suppression and schedules the hidden continuation again instead of merely restating the active state.
+
 ## Model Tools
 
 The extension registers three model tools:
@@ -69,6 +73,16 @@ pi.sendMessage(
   },
   { triggerTurn: true },
 );
+```
+
+The default continuation scheduler waits briefly before firing to avoid racing provider recovery or compaction cleanup. Override the delay with `PI_GOAL_CONTINUATION_DELAY_MS` when debugging.
+
+If an assistant message ends with a recoverable `stopReason: "error"`, the extension schedules hidden continuation pressure automatically. Authentication, missing key, permission, consent, and equivalent human-required errors are treated as non-recoverable and are not auto-pressured.
+
+If Pi still reports the agent as busy when pressure is sent, the extension uses follow-up delivery:
+
+```js
+pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
 ```
 
 The extension deliberately does not call `agent.continue()` from an assistant-terminal state.

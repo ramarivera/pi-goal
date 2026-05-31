@@ -38,6 +38,10 @@ To avoid collisions when the published package is also installed globally, the p
 
 Creating a goal also submits the objective as the next user message after the goal state is persisted, so the agent starts working on it immediately.
 
+Recoverable provider/runtime errors automatically re-apply hidden continuation pressure while a goal is active and incomplete, so long-running goals can keep moving without manual intervention.
+
+`/goal resume` can also be used as a manual pressure button when an active goal stalls: it clears continuation suppression and schedules the hidden continuation again if the goal is still active and incomplete.
+
 In interactive Pi sessions, `/goal status` opens a compact overlay with the objective, lifecycle status, usage, budget, elapsed time, and model breakdown. In non-interactive modes it falls back to the plain text status notification.
 
 When developing from this repository with the global package installed, use the local command names:
@@ -81,6 +85,7 @@ PI_GOAL_LOG_LEVEL=debug
 PI_GOAL_LOG_FILE=/tmp/pi-goal.log
 PI_GOAL_LOG_FILE=stdout
 PI_GOAL_LOG=0
+PI_GOAL_CONTINUATION_DELAY_MS=250
 ```
 
 Logs intentionally include goal ids, statuses, counters, usage, and scheduling reasons, but not full continuation prompts or objective text.
