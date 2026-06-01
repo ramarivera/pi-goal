@@ -630,6 +630,88 @@ test("turn accounting tracks detailed usage, costs, turns, and model breakdowns"
 	assert.match(status, /openai-codex\/gpt-5\.4-mini: 1,950 total/);
 });
 
+test("turn accounting correctly handles model switches with mixed provider costs and per-model pricing fallbacks", async () => {
+	let currentTime = 10_000;
+	const fake = createFakePi();
+	const extension = createGoalExtension({ clock: () => currentTime });
+	extension.register(fake.pi);
+	extension.setGoalForTest(createGoal("Multi-model cost fidelity", 500_000));
+
+	// Turn 1: "cheap" model (in pricing table), *no* cost object from provider — must calculate
+	await fake.emit("turn_start", { turnIndex: 1, timestamp: 10_000 });
+	currentTime = 70_000;
+	await fake.emit("turn_end", {
+		turnIndex: 1,
+		message: {
+			role: "assistant",
+			provider: "fireworks",
+			responseModel: "kimi-k2p6-turbo-firepass",
+			content: [],
+			usage: {
+				input: 10_000,
+				output: 4_000,
+				reasoning: 1_000,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15_000,
+				// deliberately no "cost" — common after some model switches or provider configs
+			},
+		},
+		toolResults: [],
+	});
+
+	// Turn 2: different (expensive) model, provider *does* supply cost — must prefer it
+	await fake.emit("turn_start", { turnIndex: 2, timestamp: 70_000 });
+	currentTime = 130_000;
+	await fake.emit("turn_end", {
+		turnIndex: 2,
+		message: {
+			role: "assistant",
+			provider: "anthropic",
+			model: "claude-3-5-sonnet-20241022",
+			content: [],
+			usage: {
+				input: 2_000,
+				output: 1_500,
+				totalTokens: 3_500,
+				cost: { input: 0.006, output: 0.0225, cacheRead: 0, cacheWrite: 0, total: 0.0285 },
+			},
+		},
+		toolResults: [],
+	});
+
+	const latest = latestGoal(fake);
+	assert.equal(latest.turnCount, 2);
+	assert.equal(latest.tokensUsed, 15_000 + 3_500);
+
+	// Per-model buckets must exist and be separate
+	const kimiKey = "fireworks/kimi-k2p6-turbo-firepass";
+	const claudeKey = "anthropic/claude-3-5-sonnet-20241022";
+	assert.ok(latest.usageByModel[kimiKey], "kimi bucket should exist");
+	assert.ok(latest.usageByModel[claudeKey], "claude bucket should exist");
+
+	// Kimi turn had no provider cost → calculated using table (non-zero)
+	const kimiCost = latest.usageByModel[kimiKey].cost;
+	assert.ok(kimiCost.total > 0, "calculated cost for kimi turn should be > 0");
+	// Exact ballpark from the MODEL_PRICING table + the token counts in this test
+	// (10000*0.60 + 4000*2.40 + 1000*2.40) / 1e6 = 0.018
+	assert.ok(kimiCost.total >= 0.017 && kimiCost.total <= 0.0195, `kimi calculated cost ${kimiCost.total} in expected range from pricing table`);
+
+	// Claude turn had explicit cost → must use the provider number exactly
+	const claudeCost = latest.usageByModel[claudeKey].cost;
+	assert.equal(claudeCost.total, 0.0285);
+
+	// Grand total cost must be the sum of the two (calculated + provided)
+	const grandCost = latest.usage.cost;
+	assert.ok(Math.abs(grandCost.total - (kimiCost.total + 0.0285)) < 0.000001, "grand cost should be sum of per-model costs");
+
+	// Status rendering should still work and mention both models + a non-zero total cost
+	const status = formatGoalStatus(latest);
+	assert.match(status, /fireworks\/kimi-k2p6-turbo-firepass/);
+	assert.match(status, /anthropic\/claude-3-5-sonnet-20241022/);
+	assert.match(status, /Cost: \$/);
+});
+
 test("continuation scheduling counts hidden goal reinstructions", () => {
 	const scheduled: Array<() => void> = [];
 	const fake = createFakePi();

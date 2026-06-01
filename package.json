@@ -1,6 +1,6 @@
 {
 	"name": "@ramarivera/pi-goal",
-	"version": "0.1.9",
+	"version": "0.1.10",
 	"description": "Pi extension that adds Codex-style persisted goals and hidden continuation pressure.",
 	"license": "MIT",
 	"repository": {

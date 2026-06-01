@@ -156,6 +156,55 @@ const NON_RECOVERABLE_ERROR_PATTERN =
 	/authentication failed|api key|no api key|credentials may have expired|consent required|unauthori[sz]ed|forbidden|permission denied/i;
 const DISABLED_LOGGER = pino({ enabled: false });
 
+// Best-effort fallback pricing table (USD per *million* tokens) used only when a
+// provider message supplies token counts but omits a non-zero `cost` object.
+// Provider-reported cost is *always* preferred when present (it reflects actual
+// billing, discounts, special pricing, etc.). Add entries for models you switch
+// between mid-goal. Keys must match the strings produced by getModelUsageKey().
+const MODEL_PRICING: Record<string, { input: number; output: number; reasoning?: number; cacheRead?: number; cacheWrite?: number }> = {
+	// Fireworks / Kimi (common in this environment)
+	"fireworks/kimi-k2p6-turbo-firepass": { input: 0.60, output: 2.40 },
+	// Anthropic Claude (example)
+	"anthropic/claude-3-5-sonnet-20241022": { input: 3.0, output: 15.0 },
+	"anthropic/claude-3-7-sonnet-20250219": { input: 3.0, output: 15.0 },
+	// Add more as needed (DeepSeek, Grok, OpenAI, etc.). Unmatched models fall back to $0
+	// from calculation (you still get accurate numbers if the provider includes cost).
+};
+
+function roundCostDollars(value: number): number {
+	// Enough precision for per-turn token costs without floating-point noise in assertions
+	return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function calculateCostFromTokens(
+	tokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number },
+	modelKey: string,
+): GoalCost {
+	const rates = (MODEL_PRICING[modelKey] ?? MODEL_PRICING[modelKey.toLowerCase()] ?? {}) as {
+		input?: number;
+		output?: number;
+		reasoning?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+	};
+	const toUsd = (toks: number, ratePerM: number | undefined) => (ratePerM && toks > 0 ? (toks / 1_000_000) * ratePerM : 0);
+
+	const input = toUsd(tokens.input, rates.input);
+	const output = toUsd(tokens.output, rates.output);
+	const reasoning = toUsd(tokens.reasoning, rates.reasoning ?? rates.output);
+	const cacheRead = toUsd(tokens.cacheRead, rates.cacheRead ?? rates.input);
+	const cacheWrite = toUsd(tokens.cacheWrite, rates.cacheWrite ?? rates.output);
+	const total = input + output + reasoning + cacheRead + cacheWrite;
+
+	return {
+		input: roundCostDollars(input),
+		output: roundCostDollars(output),
+		cacheRead: roundCostDollars(cacheRead),
+		cacheWrite: roundCostDollars(cacheWrite),
+		total: roundCostDollars(total),
+	};
+}
+
 function now(): number {
 	return Date.now();
 }
@@ -645,7 +694,7 @@ function numberFrom(value: unknown): number {
 	return Number.isFinite(number) ? Math.max(0, number) : 0;
 }
 
-function extractUsageAccounting(message: UsageCarrier | undefined): GoalUsage {
+function extractUsageAccounting(message: UsageCarrier | undefined, modelKey?: string): GoalUsage {
 	const usage = message?.usage ?? message?.metadata?.usage ?? message?.tokens;
 	if (!usage) return emptyUsage();
 	const input = numberFrom(usage.input ?? usage.inputTokens ?? usage.promptTokens);
@@ -655,7 +704,29 @@ function extractUsageAccounting(message: UsageCarrier | undefined): GoalUsage {
 	const cacheWrite = numberFrom(usage.cacheWrite ?? usage.cacheWriteTokens);
 	const explicitTotal = numberFrom(usage.total ?? usage.totalTokens);
 	const total = explicitTotal > 0 ? explicitTotal : input + output + reasoning + cacheRead + cacheWrite;
-	const cost = usage.cost ?? {};
+
+	const providerCost = usage.cost ?? {};
+	const providerCostTotal = numberFrom(providerCost.total);
+	const providerGaveRealCost = providerCostTotal > 0 || numberFrom(providerCost.input) > 0 || numberFrom(providerCost.output) > 0;
+
+	let effectiveCost: GoalCost;
+	if (providerGaveRealCost) {
+		// Provider (Pi + upstream) is authoritative — use it (handles discounts, special tiers, etc.)
+		effectiveCost = {
+			input: numberFrom(providerCost.input),
+			output: numberFrom(providerCost.output),
+			cacheRead: numberFrom(providerCost.cacheRead),
+			cacheWrite: numberFrom(providerCost.cacheWrite),
+			total: providerCostTotal,
+		};
+	} else if (modelKey) {
+		// No (or zero) cost from provider for this turn — calculate from known per-model rates
+		// so that expensive models mid-goal are not under-accounted as "$0".
+		effectiveCost = calculateCostFromTokens({ input, output, reasoning, cacheRead, cacheWrite }, modelKey);
+	} else {
+		effectiveCost = emptyCost();
+	}
+
 	return {
 		input: Math.floor(input),
 		output: Math.floor(output),
@@ -663,13 +734,7 @@ function extractUsageAccounting(message: UsageCarrier | undefined): GoalUsage {
 		cacheRead: Math.floor(cacheRead),
 		cacheWrite: Math.floor(cacheWrite),
 		total: Math.floor(total),
-		cost: {
-			input: numberFrom(cost.input),
-			output: numberFrom(cost.output),
-			cacheRead: numberFrom(cost.cacheRead),
-			cacheWrite: numberFrom(cost.cacheWrite),
-			total: numberFrom(cost.total),
-		},
+		cost: effectiveCost,
 	};
 }
 
@@ -1004,8 +1069,10 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			const endedAt = clock();
 			const elapsed = activeTurnStartedAt ? Math.max(0, Math.floor((endedAt - activeTurnStartedAt) / 1000)) : 0;
 			const turnEndedWithRecoverableError = isRecoverableAssistantError(goalTurnEnd.message);
-			const usage = extractUsageAccounting(goalTurnEnd.message);
 			const modelKey = getModelUsageKey(goalTurnEnd.message);
+			// Pass modelKey so extract can fall back to per-model pricing when the provider
+			// message only carried token counts (common after model switches mid-goal).
+			const usage = extractUsageAccounting(goalTurnEnd.message, modelKey);
 			const usageByModel = { ...currentGoal.usageByModel };
 			usageByModel[modelKey] = addUsage(normalizeUsage(usageByModel[modelKey]), usage);
 			currentGoal = {
