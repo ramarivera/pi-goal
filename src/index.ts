@@ -989,7 +989,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 			label: "Update Goal",
 			description: 'Mark the current goal complete. Only status "complete" is accepted.',
 			parameters: UPDATE_GOAL_SCHEMA,
-			async execute(_toolCallId, params) {
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				logger.info({ requestedStatus: params.status, ...goalLogFields(currentGoal) }, "pi-goal update_goal called");
 				if (params.status !== "complete") {
 					logger.warn({ requestedStatus: params.status, ...goalLogFields(currentGoal) }, "pi-goal update_goal rejected status");
@@ -1004,6 +1004,7 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 					});
 				}
 				setGoal(pi, transitionGoal(currentGoal, "complete"));
+				syncGoalFooterStatus(ctx, currentGoal);
 				return makeTextResult(goalResponse(currentGoal));
 			},
 		};

@@ -29,7 +29,7 @@ type CommandHandler = {
 type Handler = (event: Record<string, unknown>, ctx: ExtensionCommandContext) => unknown | Promise<unknown>;
 type FakeTool = {
 	name: string;
-	execute(toolCallId: string, params: Record<string, unknown>): Promise<TextToolResult<unknown>>;
+	execute(toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal | undefined, _onUpdate?: unknown, ctx?: ExtensionCommandContext): Promise<TextToolResult<unknown>>;
 };
 type FakeMessage = {
 	customType: string;
@@ -268,20 +268,37 @@ test("model tools enforce create and complete restrictions", async () => {
 	assert.ok(updateTool);
 	assert.ok(getTool);
 
-	const created = await createTool.execute("call-1", { objective: "Research Pi goals", token_budget: 50 });
+	const created = await createTool.execute("call-1", { objective: "Research Pi goals", token_budget: 50 }, undefined, undefined, fake.ctx);
 	assert.match(resultText(created), /Research Pi goals/);
 
-	const duplicate = await createTool.execute("call-2", { objective: "Replace it" });
+	const duplicate = await createTool.execute("call-2", { objective: "Replace it" }, undefined, undefined, fake.ctx);
 	assert.match(resultText(duplicate), /already has a goal/);
 
-	const rejected = await updateTool.execute("call-3", { status: "paused" });
+	const rejected = await updateTool.execute("call-3", { status: "paused" }, undefined, undefined, fake.ctx);
 	assert.match(resultText(rejected), /only mark the existing goal complete/);
 
-	const completed = await updateTool.execute("call-4", { status: "complete" });
+	const completed = await updateTool.execute("call-4", { status: "complete" }, undefined, undefined, fake.ctx);
 	assert.match(resultText(completed), /completionBudgetReport/);
 
-	const read = await getTool.execute("call-5", {});
+	const read = await getTool.execute("call-5", {}, undefined, undefined, fake.ctx);
 	assert.match(resultText(read), /"status": "complete"/);
+});
+
+test("update_goal tool clears footer status when completing a goal", async () => {
+	const fake = createFakePi();
+	createGoalExtension().register(fake.pi);
+
+	const goalCommand = fake.commands.get("goal");
+	const updateTool = fake.tools.get("update_goal");
+	assert.ok(goalCommand);
+	assert.ok(updateTool);
+
+	await goalCommand.handler("Implement feature --budget 100", fake.ctx);
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • 0s • $0");
+
+	const completed = await updateTool.execute("call-1", { status: "complete" }, undefined, undefined, fake.ctx);
+	assert.match(resultText(completed), /"status": "complete"/);
+	assert.equal(fake.statuses.get("pi-goal"), undefined);
 });
 
 test("model tools return controlled errors for invalid mutations", async () => {
@@ -293,13 +310,13 @@ test("model tools return controlled errors for invalid mutations", async () => {
 	assert.ok(createTool);
 	assert.ok(updateTool);
 
-	await assert.rejects(() => createTool.execute("call-1", { objective: "   " }), /goal objective is required/);
+	await assert.rejects(() => createTool.execute("call-1", { objective: "   " }, undefined, undefined, fake.ctx), /goal objective is required/);
 	await assert.rejects(
-		() => createTool.execute("call-2", { objective: "Bad budget", token_budget: 0 }),
+		() => createTool.execute("call-2", { objective: "Bad budget", token_budget: 0 }, undefined, undefined, fake.ctx),
 		/token budget must be a positive number/,
 	);
 
-	const noGoalComplete = await updateTool.execute("call-3", { status: "complete" });
+	const noGoalComplete = await updateTool.execute("call-3", { status: "complete" }, undefined, undefined, fake.ctx);
 	assert.match(resultText(noGoalComplete), /does not have an active or paused goal/);
 	assert.equal(fake.entries.length, 0);
 });
@@ -441,7 +458,7 @@ test("clearing a goal removes get_goal state and prevents continuation", async (
 	await goalCommand.handler("Implement then clear", fake.ctx);
 	await goalCommand.handler("clear", fake.ctx);
 
-	const read = await getTool.execute("call-1", {});
+	const read = await getTool.execute("call-1", {}, undefined, undefined, fake.ctx);
 	assert.match(resultText(read), /"goal": null/);
 	assert.equal(extension.scheduleContinuation(fake.pi), false);
 	assert.equal(scheduled.length, 0);
