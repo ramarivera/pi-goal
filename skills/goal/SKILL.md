@@ -48,6 +48,15 @@ Include in your objective:
 - **Constraints:** Budget limits, stop conditions, things to avoid
 - **Verification:** How to confirm the work is correct
 
+## Model tools
+
+When the extension is loaded, agents can use these tools directly:
+
+- `get_goal` — read the current persisted goal state
+- `create_goal` — create a goal when none is active or paused
+- `resume_goal` — unpause or re-pressurize an active/paused goal and schedule continuation
+- `update_goal` — mark the current goal complete only after the completion audit passes
+
 ## The completion audit
 
 Before the agent marks a goal complete, it performs an audit:

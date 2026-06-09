@@ -1010,6 +1010,27 @@ function createGoalExtension(options: GoalExtensionOptions = {}) {
 		};
 		pi.registerTool(updateGoalTool);
 
+		const resumeGoalTool: ToolDefinition<typeof EMPTY_SCHEMA, GoalResponse | { error: string }, unknown> = {
+			name: `${toolNamePrefix}resume_goal`,
+			label: "Resume Goal",
+			description: "Resume or re-pressurize the current active/paused persisted goal and schedule a continuation.",
+			parameters: EMPTY_SCHEMA,
+			async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+				logger.info(goalLogFields(currentGoal), "pi-goal resume_goal called");
+				if (!currentGoal || TERMINAL_STATUSES.has(currentGoal.status)) {
+					logger.warn(goalLogFields(currentGoal), "pi-goal resume_goal rejected missing resumable goal");
+					return makeTextResult({
+						error: "cannot resume a goal because this thread does not have an active or paused goal",
+					});
+				}
+				setGoal(pi, transitionGoal(currentGoal, "active"));
+				syncGoalFooterStatus(ctx, currentGoal);
+				scheduleContinuation(pi);
+				return makeTextResult(goalResponse(currentGoal));
+			},
+		};
+		pi.registerTool(resumeGoalTool);
+
 		pi.on("session_start", (_event, ctx) => {
 			currentGoal = readLatestGoalFromBranch(ctx.sessionManager?.getEntries?.() ?? ctx.sessionManager?.getBranch?.());
 			syncGoalFooterStatus(ctx, currentGoal);

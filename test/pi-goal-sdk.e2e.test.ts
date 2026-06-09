@@ -234,6 +234,18 @@ test("Pi SDK exposes pi-goal commands and model tools through live runtime contr
 		assert.ok(toolNames.includes("local_get_goal"), "expected local_get_goal tool to be registered");
 		assert.ok(toolNames.includes("local_create_goal"), "expected local_create_goal tool to be registered");
 		assert.ok(toolNames.includes("local_update_goal"), "expected local_update_goal tool to be registered");
+		assert.ok(toolNames.includes("local_resume_goal"), "expected local_resume_goal tool to be registered");
+
+		const resumeGoal = session.extensionRunner.getToolDefinition("local_resume_goal");
+		assert.ok(resumeGoal, "expected local_resume_goal definition to be retrievable");
+		const resumeResult = await resumeGoal.execute(
+			"call-no-goal-resume",
+			{},
+			undefined,
+			undefined,
+			session.createReplacedSessionContext() as ExtensionContext,
+		);
+		assert.match(JSON.stringify(resumeResult.details), /does not have an active or paused goal/);
 
 		const updateGoal = session.extensionRunner.getToolDefinition("local_update_goal");
 		assert.ok(updateGoal, "expected local_update_goal definition to be retrievable");

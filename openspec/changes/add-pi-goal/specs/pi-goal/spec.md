@@ -55,7 +55,7 @@ The extension SHALL expose user commands for creating, inspecting, pausing, resu
 
 ### Requirement: Model Goal Tools
 
-The extension SHALL register model tools equivalent to `get_goal`, `create_goal`, and `update_goal`, with mutation restrictions matching Codex goal semantics.
+The extension SHALL register model tools equivalent to `get_goal`, `create_goal`, `resume_goal`, and `update_goal`, with mutation restrictions matching Codex goal semantics.
 
 #### Scenario: Model reads current goal
 
@@ -71,6 +71,21 @@ The extension SHALL register model tools equivalent to `get_goal`, `create_goal`
 
 - **WHEN** the model calls `create_goal` while an active or paused goal already exists
 - **THEN** the extension rejects the request and tells the model to complete or wait for user/system control of the existing goal
+
+#### Scenario: Model resumes paused goal
+
+- **WHEN** the model calls `resume_goal` while the current goal is paused
+- **THEN** the extension marks the goal active, clears continuation suppression, persists the state, schedules hidden continuation pressure, and returns the persisted state
+
+#### Scenario: Model re-pressurizes active unfinished goal
+
+- **WHEN** the model calls `resume_goal` while the current goal is already active and incomplete
+- **THEN** the extension clears continuation suppression, persists the state, schedules hidden continuation pressure, and returns the persisted state
+
+#### Scenario: Model cannot resume absent or terminal goal
+
+- **WHEN** the model calls `resume_goal` while no resumable active or paused goal exists
+- **THEN** the extension rejects the request with a controlled error
 
 #### Scenario: Model completes goal
 

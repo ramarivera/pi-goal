@@ -20,6 +20,8 @@
 - [x] 3.3 Register `update_goal` and allow only `status: "complete"`.
 - [x] 3.4 Return final budget and elapsed-time accounting when `update_goal` completes a goal.
 - [x] 3.5 Add tool tests for read, create, duplicate-create rejection, complete, and non-complete update rejection.
+- [x] 3.6 Register `resume_goal` so the model can resume or re-pressurize an active/paused goal when explicitly instructed.
+- [x] 3.7 Add tool and SDK tests for `resume_goal` registration, paused-goal resume, active-goal re-pressure, and absent/terminal-goal rejection.
 
 ## 4. Continuation Loop
 

@@ -263,9 +263,11 @@ test("model tools enforce create and complete restrictions", async () => {
 
 	const createTool = fake.tools.get("create_goal");
 	const updateTool = fake.tools.get("update_goal");
+	const resumeTool = fake.tools.get("resume_goal");
 	const getTool = fake.tools.get("get_goal");
 	assert.ok(createTool);
 	assert.ok(updateTool);
+	assert.ok(resumeTool);
 	assert.ok(getTool);
 
 	const created = await createTool.execute("call-1", { objective: "Research Pi goals", token_budget: 50 }, undefined, undefined, fake.ctx);
@@ -277,11 +279,67 @@ test("model tools enforce create and complete restrictions", async () => {
 	const rejected = await updateTool.execute("call-3", { status: "paused" }, undefined, undefined, fake.ctx);
 	assert.match(resultText(rejected), /only mark the existing goal complete/);
 
-	const completed = await updateTool.execute("call-4", { status: "complete" }, undefined, undefined, fake.ctx);
+	const resumed = await resumeTool.execute("call-4", {}, undefined, undefined, fake.ctx);
+	assert.match(resultText(resumed), /"status": "active"/);
+
+	const completed = await updateTool.execute("call-5", { status: "complete" }, undefined, undefined, fake.ctx);
 	assert.match(resultText(completed), /completionBudgetReport/);
 
-	const read = await getTool.execute("call-5", {}, undefined, undefined, fake.ctx);
+	const read = await getTool.execute("call-6", {}, undefined, undefined, fake.ctx);
 	assert.match(resultText(read), /"status": "complete"/);
+});
+
+test("resume_goal tool resumes paused goals and schedules continuation", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+
+	const goalCommand = fake.commands.get("goal");
+	const resumeTool = fake.tools.get("resume_goal");
+	assert.ok(goalCommand);
+	assert.ok(resumeTool);
+
+	await goalCommand.handler("Implement feature --budget 100", fake.ctx);
+	await goalCommand.handler("pause", fake.ctx);
+	assert.equal(latestGoal(fake).status, "paused");
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 paused • 0 turns • 0/100 tokens • 0s • $0");
+
+	const resumed = await resumeTool.execute("call-1", {}, undefined, undefined, fake.ctx);
+	assert.match(resultText(resumed), /"status": "active"/);
+	assert.equal(latestGoal(fake).status, "active");
+	assert.equal(latestGoal(fake).continuationSuppressed, false);
+	assert.equal(latestGoal(fake).lastContinuationHadToolCall, true);
+	assert.equal(fake.statuses.get("pi-goal"), "🎯 active • 0 turns • 0/100 tokens • 0s • $0");
+	assert.equal(scheduled.length, 1);
+});
+
+test("resume_goal tool re-pressurizes active goals and rejects terminal or absent goals", async () => {
+	const scheduled: Array<() => void> = [];
+	const fake = createFakePi();
+	const extension = createGoalExtension({ scheduler: (fn) => scheduled.push(fn) });
+	extension.register(fake.pi);
+
+	const goalCommand = fake.commands.get("goal");
+	const resumeTool = fake.tools.get("resume_goal");
+	const updateTool = fake.tools.get("update_goal");
+	assert.ok(goalCommand);
+	assert.ok(resumeTool);
+	assert.ok(updateTool);
+
+	const noGoal = await resumeTool.execute("call-1", {}, undefined, undefined, fake.ctx);
+	assert.match(resultText(noGoal), /does not have an active or paused goal/);
+	assert.equal(scheduled.length, 0);
+
+	await goalCommand.handler("Repressure active --budget 100", fake.ctx);
+	const active = await resumeTool.execute("call-2", {}, undefined, undefined, fake.ctx);
+	assert.match(resultText(active), /"status": "active"/);
+	assert.equal(scheduled.length, 1);
+
+	await updateTool.execute("call-3", { status: "complete" }, undefined, undefined, fake.ctx);
+	const terminal = await resumeTool.execute("call-4", {}, undefined, undefined, fake.ctx);
+	assert.match(resultText(terminal), /does not have an active or paused goal/);
+	assert.equal(scheduled.length, 1);
 });
 
 test("update_goal tool clears footer status when completing a goal", async () => {
